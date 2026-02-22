@@ -1,6 +1,6 @@
 use std::{cmp::Reverse, rc::Rc, sync::Arc};
 
-use acp_thread::{AgentModelIcon, AgentModelInfo, AgentModelList, AgentModelSelector};
+use acp_thread::{AgentModelIcon, AgentModelInfo, AgentModelList, AgentModelSelector, ModelHoverInfo};
 use agent_client_protocol::ModelId;
 use agent_servers::AgentServer;
 use agent_settings::AgentSettings;
@@ -10,10 +10,11 @@ use fs::Fs;
 use futures::FutureExt;
 use fuzzy::{StringMatchCandidate, match_strings};
 use gpui::{
-    Action, AsyncWindowContext, BackgroundExecutor, DismissEvent, FocusHandle, Subscription, Task,
-    WeakEntity,
+    Action, AsyncWindowContext, BackgroundExecutor, DismissEvent, Entity, FocusHandle, Subscription,
+    Task, WeakEntity,
 };
 use itertools::Itertools;
+use language_models::provider::open_router::OpenRouterState;
 use ordered_float::OrderedFloat;
 use picker::{Picker, PickerDelegate};
 use settings::{Settings, SettingsStore};
@@ -21,7 +22,9 @@ use ui::{DocumentationAside, DocumentationSide, IntoElement, prelude::*};
 use util::ResultExt;
 use zed_actions::agent::OpenSettings;
 
-use crate::ui::{HoldForDefault, ModelSelectorFooter, ModelSelectorHeader, ModelSelectorListItem};
+use crate::ui::{
+    HoldForDefault, ModelSelectorFooter, ModelSelectorHeader, ModelSelectorListItem,
+};
 
 pub type AcpModelSelector = Picker<AcpModelPickerDelegate>;
 
@@ -46,6 +49,12 @@ enum AcpModelPickerEntry {
     Model(AgentModelInfo, bool),
 }
 
+struct HoveredModelState {
+    index: usize,
+    hover_info: Rc<dyn ModelHoverInfo>,
+    is_default: bool,
+}
+
 pub struct AcpModelPickerDelegate {
     selector: Rc<dyn AgentModelSelector>,
     agent_server: Rc<dyn AgentServer>,
@@ -53,11 +62,12 @@ pub struct AcpModelPickerDelegate {
     filtered_entries: Vec<AcpModelPickerEntry>,
     models: Option<AgentModelList>,
     selected_index: usize,
-    selected_description: Option<(usize, SharedString, bool)>,
+    hovered_model: Option<HoveredModelState>,
     selected_model: Option<AgentModelInfo>,
     favorites: HashSet<ModelId>,
     _refresh_models_task: Task<()>,
     _settings_subscription: Subscription,
+    _openrouter_subscription: Option<Subscription>,
     focus_handle: FocusHandle,
 }
 
@@ -118,6 +128,12 @@ impl AcpModelPickerDelegate {
             });
         let favorites = agent_server.favorite_model_ids(cx);
 
+        let openrouter_subscription = Self::get_openrouter_state(cx).map(|state| {
+            cx.observe_in(&state, window, |_picker, _, _, cx| {
+                cx.notify();
+            })
+        });
+
         Self {
             selector,
             agent_server,
@@ -126,12 +142,17 @@ impl AcpModelPickerDelegate {
             models: None,
             selected_model: None,
             selected_index: 0,
-            selected_description: None,
+            hovered_model: None,
             favorites,
             _refresh_models_task: refresh_models_task,
             _settings_subscription: settings_subscription,
+            _openrouter_subscription: openrouter_subscription,
             focus_handle,
         }
+    }
+
+    fn get_openrouter_state(cx: &App) -> Option<Entity<OpenRouterState>> {
+        OpenRouterState::global(cx)
     }
 
     pub fn active_model(&self) -> Option<&AgentModelInfo> {
@@ -344,19 +365,45 @@ impl PickerDelegate for AcpModelPickerDelegate {
                     })
                 };
 
+                let hover_info = model_info.hover_info.clone();
+
                 Some(
                     div()
                         .id(("model-picker-menu-child", ix))
-                        .when_some(model_info.description.clone(), |this, description| {
-                            this.on_hover(cx.listener(move |menu, hovered, _, cx| {
-                                if *hovered {
-                                    menu.delegate.selected_description =
-                                        Some((ix, description.clone(), is_default));
-                                } else if matches!(menu.delegate.selected_description, Some((id, _, _)) if id == ix) {
-                                    menu.delegate.selected_description = None;
-                                }
-                                cx.notify();
-                            }))
+                        .map(|this| {
+                            if let Some(hover_info) = hover_info {
+                                this.on_hover(cx.listener(move |menu, hovered, window, cx| {
+                                    let mouse_in_aside = menu.is_mouse_over_aside(window);
+                                    log::info!(
+                                        "[ModelSelector] item on_hover: ix={}, hovered={}, aside_hovered={}, mouse_in_aside={}",
+                                        ix,
+                                        hovered,
+                                        menu.is_aside_hovered(),
+                                        mouse_in_aside
+                                    );
+                                    if *hovered {
+                                        menu.set_aside_hovered(false);
+                                        menu.delegate.hovered_model = Some(HoveredModelState {
+                                            index: ix,
+                                            hover_info: hover_info.clone(),
+                                            is_default,
+                                        });
+                                    } else if menu
+                                        .delegate
+                                        .hovered_model
+                                        .as_ref()
+                                        .is_some_and(|state| state.index == ix)
+                                        && !menu.is_aside_hovered()
+                                        && !mouse_in_aside
+                                    {
+                                        log::info!("[ModelSelector] clearing hovered_model for ix={}", ix);
+                                        menu.delegate.hovered_model = None;
+                                    }
+                                    cx.notify();
+                                }))
+                            } else {
+                                this
+                            }
                         })
                         .child(
                             ModelSelectorListItem::new(ix, model_info.name.clone())
@@ -382,36 +429,36 @@ impl PickerDelegate for AcpModelPickerDelegate {
         _window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) -> Option<ui::DocumentationAside> {
-        self.selected_description
-            .as_ref()
-            .map(|(_, description, is_default)| {
-                let description = description.clone();
-                let is_default = *is_default;
+        let hovered_model = self.hovered_model.as_ref()?;
 
-                let settings = AgentSettings::get_global(cx);
-                let side = match settings.dock {
-                    settings::DockPosition::Left => DocumentationSide::Right,
-                    settings::DockPosition::Bottom | settings::DockPosition::Right => {
-                        DocumentationSide::Left
-                    }
-                };
+        let settings = AgentSettings::get_global(cx);
+        let side = match settings.dock {
+            settings::DockPosition::Left => DocumentationSide::Right,
+            settings::DockPosition::Bottom | settings::DockPosition::Right => {
+                DocumentationSide::Left
+            }
+        };
 
-                DocumentationAside::new(
-                    side,
-                    Rc::new(move |_| {
-                        v_flex()
-                            .gap_1()
-                            .child(Label::new(description.clone()))
-                            .child(HoldForDefault::new(is_default))
-                            .into_any_element()
-                    }),
-                )
-            })
+        let hover_info = hovered_model.hover_info.clone();
+        let is_default = hovered_model.is_default;
+
+        Some(DocumentationAside::new(
+            side,
+            Rc::new(move |cx| {
+                v_flex()
+                    .gap_1()
+                    .child(hover_info.render(cx))
+                    .when(is_default, |this| this.child(HoldForDefault::new(true)))
+                    .into_any_element()
+            }),
+        ))
     }
 
     fn documentation_aside_index(&self) -> Option<usize> {
-        self.selected_description.as_ref().map(|(ix, _, _)| *ix)
+        self.hovered_model.as_ref().map(|state| state.index)
     }
+
+
 
     fn render_footer(
         &self,
@@ -551,9 +598,9 @@ mod tests {
                         .map(|model| acp_thread::AgentModelInfo {
                             id: acp::ModelId::new(model.to_string()),
                             name: model.to_string().into(),
-                            description: None,
                             icon: None,
                             is_latest: false,
+                            hover_info: None,
                         })
                         .collect::<Vec<_>>(),
                 )
@@ -765,16 +812,16 @@ mod tests {
             acp_thread::AgentModelInfo {
                 id: acp::ModelId::new("zed/claude".to_string()),
                 name: "Claude".into(),
-                description: None,
                 icon: None,
                 is_latest: false,
+                hover_info: None,
             },
             acp_thread::AgentModelInfo {
                 id: acp::ModelId::new("zed/gemini".to_string()),
                 name: "Gemini".into(),
-                description: None,
                 icon: None,
                 is_latest: false,
+                hover_info: None,
             },
         ]);
         let favorites = create_favorites(vec!["zed/gemini"]);
@@ -813,16 +860,16 @@ mod tests {
             acp_thread::AgentModelInfo {
                 id: acp::ModelId::new("favorite-model".to_string()),
                 name: "Favorite".into(),
-                description: None,
                 icon: None,
                 is_latest: false,
+                hover_info: None,
             },
             acp_thread::AgentModelInfo {
                 id: acp::ModelId::new("regular-model".to_string()),
                 name: "Regular".into(),
-                description: None,
                 icon: None,
                 is_latest: false,
+                hover_info: None,
             },
         ]);
         let favorites = create_favorites(vec!["favorite-model"]);
