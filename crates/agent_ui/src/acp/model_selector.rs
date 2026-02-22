@@ -372,8 +372,17 @@ impl PickerDelegate for AcpModelPickerDelegate {
                         .id(("model-picker-menu-child", ix))
                         .map(|this| {
                             if let Some(hover_info) = hover_info {
-                                this.on_hover(cx.listener(move |menu, hovered, _, cx| {
+                                this.on_hover(cx.listener(move |menu, hovered, window, cx| {
+                                    let mouse_in_aside = menu.is_mouse_over_aside(window);
+                                    log::info!(
+                                        "[ModelSelector] item on_hover: ix={}, hovered={}, aside_hovered={}, mouse_in_aside={}",
+                                        ix,
+                                        hovered,
+                                        menu.is_aside_hovered(),
+                                        mouse_in_aside
+                                    );
                                     if *hovered {
+                                        menu.set_aside_hovered(false);
                                         menu.delegate.hovered_model = Some(HoveredModelState {
                                             index: ix,
                                             hover_info: hover_info.clone(),
@@ -384,7 +393,10 @@ impl PickerDelegate for AcpModelPickerDelegate {
                                         .hovered_model
                                         .as_ref()
                                         .is_some_and(|state| state.index == ix)
+                                        && !menu.is_aside_hovered()
+                                        && !mouse_in_aside
                                     {
+                                        log::info!("[ModelSelector] clearing hovered_model for ix={}", ix);
                                         menu.delegate.hovered_model = None;
                                     }
                                     cx.notify();
@@ -445,6 +457,8 @@ impl PickerDelegate for AcpModelPickerDelegate {
     fn documentation_aside_index(&self) -> Option<usize> {
         self.hovered_model.as_ref().map(|state| state.index)
     }
+
+
 
     fn render_footer(
         &self,

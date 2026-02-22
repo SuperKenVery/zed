@@ -79,7 +79,6 @@ impl OpenRouterState {
         cx: &mut Context<Self>,
     ) -> Task<Result<(), LanguageModelCompletionError>> {
         log::info!("[OpenRouter] fetch_models_from_api started");
-        let api_url = OpenRouterLanguageModelProvider::api_url(cx);
         let http_client = self.http_client.clone();
         cx.spawn(async move |this, cx| {
             log::info!("[OpenRouter] fetching models from API...");
