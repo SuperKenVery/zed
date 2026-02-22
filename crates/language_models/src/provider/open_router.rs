@@ -12,8 +12,11 @@ use language_model::{
     StopReason, TokenUsage, env_var,
 };
 use open_router::{
-    Model, ModelMode as OpenRouterModelMode, OPEN_ROUTER_API_URL, ResponseStreamEvent, list_models,
+    Model, ModelMode as OpenRouterModelMode, OPEN_ROUTER_API_URL, ResponseStreamEvent,
+    fetch_models, get_model_endpoints,
 };
+
+pub use open_router::Endpoint as OpenRouterEndpoint;
 use settings::{OpenRouterAvailableModel as AvailableModel, Settings, SettingsStore};
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
@@ -26,6 +29,10 @@ use crate::provider::util::parse_tool_arguments;
 const PROVIDER_ID: LanguageModelProviderId = LanguageModelProviderId::new("openrouter");
 const PROVIDER_NAME: LanguageModelProviderName = LanguageModelProviderName::new("OpenRouter");
 
+struct GlobalOpenRouterState(Entity<OpenRouterState>);
+
+impl gpui::Global for GlobalOpenRouterState {}
+
 const API_KEY_ENV_VAR_NAME: &str = "OPENROUTER_API_KEY";
 static API_KEY_ENV_VAR: LazyLock<EnvVar> = env_var!(API_KEY_ENV_VAR_NAME);
 
@@ -37,17 +44,20 @@ pub struct OpenRouterSettings {
 
 pub struct OpenRouterLanguageModelProvider {
     http_client: Arc<dyn HttpClient>,
-    state: Entity<State>,
+    state: Entity<OpenRouterState>,
 }
 
-pub struct State {
+pub struct OpenRouterState {
     api_key_state: ApiKeyState,
     http_client: Arc<dyn HttpClient>,
     available_models: Vec<open_router::Model>,
     fetch_models_task: Option<Task<Result<(), LanguageModelCompletionError>>>,
+    endpoint_cache: HashMap<String, Vec<OpenRouterEndpoint>>,
+    endpoint_fetch_tasks: HashMap<String, Task<()>>,
+    selected_providers: HashMap<String, String>,
 }
 
-impl State {
+impl OpenRouterState {
     fn is_authenticated(&self) -> bool {
         self.api_key_state.has_key()
     }
@@ -60,40 +70,42 @@ impl State {
 
     fn authenticate(&mut self, cx: &mut Context<Self>) -> Task<Result<(), AuthenticateError>> {
         let api_url = OpenRouterLanguageModelProvider::api_url(cx);
-        let task = self
-            .api_key_state
-            .load_if_needed(api_url, |this| &mut this.api_key_state, cx);
-
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            this.update(cx, |this, cx| this.restart_fetch_models_task(cx))
-                .ok();
-            result
-        })
+        self.api_key_state
+            .load_if_needed(api_url, |this| &mut this.api_key_state, cx)
     }
 
-    fn fetch_models(
+    fn fetch_models_from_api(
         &mut self,
         cx: &mut Context<Self>,
     ) -> Task<Result<(), LanguageModelCompletionError>> {
-        let http_client = self.http_client.clone();
+        log::info!("[OpenRouter] fetch_models_from_api started");
         let api_url = OpenRouterLanguageModelProvider::api_url(cx);
-        let Some(api_key) = self.api_key_state.key(&api_url) else {
-            return Task::ready(Err(LanguageModelCompletionError::NoApiKey {
-                provider: PROVIDER_NAME,
-            }));
-        };
+        let http_client = self.http_client.clone();
         cx.spawn(async move |this, cx| {
-            let models = list_models(http_client.as_ref(), &api_url, &api_key)
-                .await
-                .map_err(|e| {
-                    LanguageModelCompletionError::Other(anyhow::anyhow!(
-                        "OpenRouter error: {:?}",
-                        e
-                    ))
-                })?;
+            log::info!("[OpenRouter] fetching models from API...");
+            let result = fetch_models(http_client.as_ref()).await;
+
+            match &result {
+                Ok(models) => {
+                    log::info!(
+                        "[OpenRouter] fetch_models succeeded, count: {}",
+                        models.len()
+                    );
+                }
+                Err(e) => {
+                    log::error!("[OpenRouter] fetch_models failed: {:?}", e);
+                }
+            }
+
+            let models = result.map_err(|e| {
+                LanguageModelCompletionError::Other(anyhow::anyhow!("OpenRouter error: {:?}", e))
+            })?;
 
             this.update(cx, |this, cx| {
+                log::info!(
+                    "[OpenRouter] updating available_models with {} models",
+                    models.len()
+                );
                 this.available_models = models;
                 cx.notify();
             })
@@ -104,13 +116,197 @@ impl State {
     }
 
     fn restart_fetch_models_task(&mut self, cx: &mut Context<Self>) {
-        if self.is_authenticated() {
-            let task = self.fetch_models(cx);
+        if self.fetch_models_task.is_none() {
+            let task = self.fetch_models_from_api(cx);
             self.fetch_models_task.replace(task);
-        } else {
-            self.available_models = Vec::new();
         }
     }
+
+    pub fn get_cached_endpoints(&self, model_id: &str) -> Option<&Vec<OpenRouterEndpoint>> {
+        self.endpoint_cache.get(model_id)
+    }
+
+    pub fn fetch_endpoints(&mut self, model_id: &str, cx: &mut Context<Self>) {
+        if self.endpoint_cache.contains_key(model_id)
+            || self.endpoint_fetch_tasks.contains_key(model_id)
+        {
+            return;
+        }
+
+        let api_url = OpenRouterLanguageModelProvider::api_url(cx);
+        let Some(api_key) = self.api_key_state.key(&api_url) else {
+            log::warn!("[OpenRouter] fetch_endpoints: no API key available");
+            return;
+        };
+
+        let model_id_owned = model_id.to_string();
+        let http_client = self.http_client.clone();
+
+        let task = cx.spawn({
+            let model_id = model_id_owned.clone();
+            async move |this, cx| {
+                let endpoints =
+                    get_model_endpoints(http_client.as_ref(), &model_id, &api_key).await;
+
+                this.update(cx, |this, cx| {
+                    this.endpoint_fetch_tasks.remove(&model_id);
+                    match endpoints {
+                        Ok(endpoints) => {
+                            log::info!(
+                                "[OpenRouter] fetch_endpoints succeeded for {}: {} endpoints",
+                                model_id,
+                                endpoints.len()
+                            );
+                            this.endpoint_cache.insert(model_id, endpoints);
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "[OpenRouter] fetch_endpoints failed for {}: {:?}",
+                                model_id,
+                                e
+                            );
+                            this.endpoint_cache.insert(model_id, vec![]);
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+            }
+        });
+
+        self.endpoint_fetch_tasks.insert(model_id_owned, task);
+    }
+
+    pub fn is_fetching_endpoints(&self, model_id: &str) -> bool {
+        self.endpoint_fetch_tasks.contains_key(model_id)
+    }
+
+    pub fn selected_provider(&self, model_id: &str) -> Option<&String> {
+        self.selected_providers.get(model_id)
+    }
+
+    pub fn set_selected_provider(&mut self, model_id: &str, provider_name: String) {
+        self.selected_providers
+            .insert(model_id.to_string(), provider_name);
+    }
+
+    pub fn global(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<GlobalOpenRouterState>()
+            .map(|g| g.0.clone())
+    }
+}
+
+pub struct OpenRouterProvidersHoverInfo {
+    model_id: String,
+}
+
+impl OpenRouterProvidersHoverInfo {
+    pub fn new(model_id: impl Into<String>) -> Self {
+        Self {
+            model_id: model_id.into(),
+        }
+    }
+
+    fn stripped_model_id(&self) -> &str {
+        self.model_id
+            .strip_prefix("openrouter/")
+            .unwrap_or(&self.model_id)
+    }
+}
+
+impl acp_thread::ModelHoverInfo for OpenRouterProvidersHoverInfo {
+    fn render(&self, cx: &mut App) -> gpui::AnyElement {
+        use acp_thread::{
+            GenericProviderListItem, ModelProviderInfo, ProviderSelectorHeader,
+            ProviderSelectorLoading,
+        };
+        use gpui::prelude::*;
+        use ui::prelude::*;
+
+        let Some(state) = OpenRouterState::global(cx) else {
+            return ProviderSelectorLoading.into_any_element();
+        };
+
+        let model_id = self.stripped_model_id().to_string();
+
+        state.update(cx, |state, cx| {
+            state.fetch_endpoints(&model_id, cx);
+        });
+
+        let endpoints = state
+            .read(cx)
+            .get_cached_endpoints(&model_id)
+            .cloned()
+            .unwrap_or_default();
+
+        let selected = state.read(cx).selected_provider(&model_id).cloned();
+
+        let in_flight = state.read(cx).is_fetching_endpoints(&model_id);
+
+        if endpoints.is_empty() {
+            if in_flight {
+                return v_flex()
+                    .w(rems(22.))
+                    .child(ProviderSelectorLoading)
+                    .into_any_element();
+            } else {
+                return v_flex()
+                    .w(rems(22.))
+                    .child(
+                        div().p_4().child(
+                            h_flex()
+                                .justify_center()
+                                .child(Label::new("Failed to load providers").color(Color::Error)),
+                        ),
+                    )
+                    .into_any_element();
+            }
+        }
+
+        let providers: Vec<ModelProviderInfo> = endpoints
+            .into_iter()
+            .map(|e| ModelProviderInfo {
+                name: e.provider_name.clone().into(),
+                display_name: e.provider_name.into(),
+                quantization: Some(e.quantization.into()),
+                throughput_tps: e.throughput_last_30m.map(|t| t.p50),
+                latency_ms: e.latency_last_30m.map(|l| l.p50),
+                input_price_per_million: parse_price_per_million(&e.pricing.prompt),
+                output_price_per_million: parse_price_per_million(&e.pricing.completion),
+            })
+            .collect();
+
+        v_flex()
+            .w(rems(22.))
+            .child(ProviderSelectorHeader)
+            .child(
+                v_flex()
+                    .gap_0p5()
+                    .children(providers.into_iter().enumerate().map(|(idx, provider)| {
+                        let provider_name = provider.name.to_string();
+                        let is_selected = selected.as_ref() == Some(&provider_name);
+                        let model_id = model_id.clone();
+
+                        GenericProviderListItem::new(("provider", idx), provider)
+                            .selected(is_selected)
+                            .on_click(move |_, _, cx| {
+                                if let Some(state) = OpenRouterState::global(cx) {
+                                    state.update(cx, |state, _| {
+                                        state.set_selected_provider(
+                                            &model_id,
+                                            provider_name.clone(),
+                                        );
+                                    });
+                                }
+                            })
+                    })),
+            )
+            .into_any_element()
+    }
+}
+
+fn parse_price_per_million(price: &str) -> Option<f64> {
+    price.parse::<f64>().ok().map(|p| p * 1_000_000.0)
 }
 
 impl OpenRouterLanguageModelProvider {
@@ -118,7 +314,7 @@ impl OpenRouterLanguageModelProvider {
         let state = cx.new(|cx| {
             cx.observe_global::<SettingsStore>({
                 let mut last_settings = OpenRouterLanguageModelProvider::settings(cx).clone();
-                move |this: &mut State, cx| {
+                move |this: &mut OpenRouterState, cx| {
                     let current_settings = OpenRouterLanguageModelProvider::settings(cx);
                     let settings_changed = current_settings != &last_settings;
                     if settings_changed {
@@ -129,13 +325,21 @@ impl OpenRouterLanguageModelProvider {
                 }
             })
             .detach();
-            State {
+
+            let mut state = OpenRouterState {
                 api_key_state: ApiKeyState::new(Self::api_url(cx), (*API_KEY_ENV_VAR).clone()),
                 http_client: http_client.clone(),
                 available_models: Vec::new(),
                 fetch_models_task: None,
-            }
+                endpoint_cache: HashMap::default(),
+                endpoint_fetch_tasks: HashMap::default(),
+                selected_providers: HashMap::default(),
+            };
+            state.restart_fetch_models_task(cx);
+            state
         });
+
+        cx.set_global(GlobalOpenRouterState(state.clone()));
 
         Self { http_client, state }
     }
@@ -162,10 +366,14 @@ impl OpenRouterLanguageModelProvider {
             request_limiter: RateLimiter::new(4),
         })
     }
+
+    pub fn state(&self) -> &Entity<OpenRouterState> {
+        &self.state
+    }
 }
 
 impl LanguageModelProviderState for OpenRouterLanguageModelProvider {
-    type ObservableEntity = State;
+    type ObservableEntity = OpenRouterState;
 
     fn observable_entity(&self) -> Option<Entity<Self::ObservableEntity>> {
         Some(self.state.clone())
@@ -253,7 +461,7 @@ impl LanguageModelProvider for OpenRouterLanguageModelProvider {
 pub struct OpenRouterLanguageModel {
     id: LanguageModelId,
     model: open_router::Model,
-    state: Entity<State>,
+    state: Entity<OpenRouterState>,
     http_client: Arc<dyn HttpClient>,
     request_limiter: RateLimiter,
 }
@@ -331,6 +539,14 @@ impl LanguageModel for OpenRouterLanguageModel {
         format!("openrouter/{}", self.model.id())
     }
 
+    fn available_endpoints(&self, cx: &App) -> Vec<open_router::Endpoint> {
+        self.state
+            .read(cx)
+            .get_cached_endpoints(self.model.id())
+            .cloned()
+            .unwrap_or_default()
+    }
+
     fn max_token_count(&self) -> u64 {
         self.model.max_token_count()
     }
@@ -373,7 +589,16 @@ impl LanguageModel for OpenRouterLanguageModel {
             LanguageModelCompletionError,
         >,
     > {
-        let openrouter_request = into_open_router(request, &self.model, self.max_output_tokens());
+        let model_id = self.model.id();
+        let selected_provider = self
+            .state
+            .read_with(cx, |state, _| state.selected_provider(model_id).cloned());
+        let openrouter_request = into_open_router(
+            request,
+            &self.model,
+            self.max_output_tokens(),
+            selected_provider.as_deref(),
+        );
         let request = self.stream_completion(openrouter_request, cx);
         let future = self.request_limiter.stream(async move {
             let response = request.await?;
@@ -387,6 +612,7 @@ pub fn into_open_router(
     request: LanguageModelRequest,
     model: &Model,
     max_output_tokens: Option<u64>,
+    selected_provider: Option<&str>,
 ) -> open_router::Request {
     // Anthropic models via OpenRouter don't accept reasoning_details being echoed back
     // in requests - it's an output-only field for them. However, Gemini models require
@@ -515,7 +741,13 @@ pub fn into_open_router(
             LanguageModelToolChoice::Any => open_router::ToolChoice::Required,
             LanguageModelToolChoice::None => open_router::ToolChoice::None,
         }),
-        provider: model.provider.clone(),
+        provider: if let Some(provider_name) = selected_provider {
+            Some(open_router::Provider::with_order(vec![
+                provider_name.to_string(),
+            ]))
+        } else {
+            model.provider.clone()
+        },
     }
 }
 
@@ -733,12 +965,12 @@ pub fn count_open_router_tokens(
 
 struct ConfigurationView {
     api_key_editor: Entity<InputField>,
-    state: Entity<State>,
+    state: Entity<OpenRouterState>,
     load_credentials_task: Option<Task<()>>,
 }
 
 impl ConfigurationView {
-    fn new(state: Entity<State>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(state: Entity<OpenRouterState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let api_key_editor = cx.new(|cx| {
             InputField::new(
                 window,
