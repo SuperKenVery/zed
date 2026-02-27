@@ -3927,6 +3927,7 @@ async fn test_preview_updates_when_selection_changes(cx: &mut TestAppContext) {
             .expect("first preview editor should be loaded")
             .read(cx)
             .title(cx)
+            .to_string()
     });
     assert_eq!(first_preview_title, "file_finder.rs");
 
@@ -3944,6 +3945,7 @@ async fn test_preview_updates_when_selection_changes(cx: &mut TestAppContext) {
             .expect("second preview editor should be loaded")
             .read(cx)
             .title(cx)
+            .to_string()
     });
     assert_eq!(second_preview_title, "file_finder_tests.rs");
 }
