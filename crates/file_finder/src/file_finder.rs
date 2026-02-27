@@ -386,6 +386,7 @@ impl FileFinder {
     fn set_preview_selection(
         &mut self,
         preview_selection: Option<PreviewSelection>,
+        project: Entity<Project>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -405,7 +406,6 @@ impl FileFinder {
             return;
         };
 
-        let project = self.picker.read(cx).delegate.project.clone();
         self.preview_load_task = Some(cx.spawn_in(window, async move |file_finder, cx| {
             let open_buffer_task = project.update(cx, |project, cx| {
                 project.open_buffer(project_path.clone(), cx)
@@ -1488,11 +1488,12 @@ impl FileFinderDelegate {
     fn update_preview_selection(&self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
         cx.defer_in(window, |picker, window, cx| {
             let preview_selection = picker.delegate.selected_preview_selection(cx);
+            let project = picker.delegate.project.clone();
             picker
                 .delegate
                 .file_finder
                 .update(cx, |file_finder, cx| {
-                    file_finder.set_preview_selection(preview_selection, window, cx);
+                    file_finder.set_preview_selection(preview_selection, project, window, cx);
                 })
                 .log_err();
         });
