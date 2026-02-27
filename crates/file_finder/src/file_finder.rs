@@ -34,6 +34,7 @@ use std::{
     },
 };
 use text::Point;
+use theme::ThemeSettings;
 use ui::{
     ButtonLike, ContextMenu, Divider, HighlightedLabel, Indicator, KeyBinding, ListItem,
     ListItemSpacing, PopoverMenu, PopoverMenuHandle, TintColor, Tooltip, prelude::*,
@@ -507,10 +508,20 @@ impl Render for FileFinder {
         let preview_width = rems(34.).to_pixels(window.rem_size());
         let modal_width = picker_width + preview_width;
         let modal_max_height = vh(0.7, window);
+        let preview_modal_min_height = self.preview_editor.as_ref().map(|preview_editor| {
+            let preview_line_count = preview_editor.read_with(cx, |editor, cx| {
+                editor.buffer().read(cx).read(cx).max_point().row + 1
+            });
+            let theme_settings = ThemeSettings::get_global(cx);
+            let line_height =
+                theme_settings.buffer_font_size(cx) * theme_settings.buffer_line_height.value();
+            let preview_header_height = rems(2.).to_pixels(window.rem_size());
+            preview_header_height + line_height * preview_line_count as f32
+        });
 
-        let mut preview_body = v_flex().min_h_0().overflow_hidden().p_2();
+        let mut preview_body = v_flex().flex_1().min_h_0().overflow_hidden().p_2();
         if let Some(editor) = self.preview_editor.clone() {
-            preview_body = preview_body.p_0().child(div().w_full().child(editor));
+            preview_body = preview_body.p_0().child(div().size_full().child(editor));
         } else if let Some(error) = self.preview_error.clone() {
             preview_body = preview_body
                 .child(Label::new(format!("Unable to preview file: {error}")).color(Color::Muted));
@@ -528,6 +539,9 @@ impl Render for FileFinder {
             .key_context(key_context)
             .w(modal_width)
             .max_h(modal_max_height)
+            .when_some(preview_modal_min_height, |this, min_height| {
+                this.min_h(min_height.min(modal_max_height))
+            })
             .items_stretch()
             .overflow_hidden()
             .elevation_3(cx)
