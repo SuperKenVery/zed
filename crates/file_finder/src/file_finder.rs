@@ -88,6 +88,7 @@ pub struct FileFinder {
     init_modifiers: Option<Modifiers>,
     preview_selection: Option<PreviewSelection>,
     preview_editor: Option<Entity<Editor>>,
+    preview_text: Option<String>,
     preview_error: Option<String>,
     preview_load_task: Option<Task<()>>,
     preview_request_id: usize,
@@ -206,6 +207,7 @@ impl FileFinder {
             init_modifiers: window.modifiers().modified().then_some(window.modifiers()),
             preview_selection: None,
             preview_editor: None,
+            preview_text: None,
             preview_error: None,
             preview_load_task: None,
             preview_request_id: 0,
@@ -379,6 +381,7 @@ impl FileFinder {
 
         self.preview_load_task = None;
         self.preview_editor = None;
+        self.preview_text = None;
         self.preview_error = Some(error);
         cx.notify();
     }
@@ -396,6 +399,7 @@ impl FileFinder {
 
         self.preview_selection = preview_selection.clone();
         self.preview_editor = None;
+        self.preview_text = None;
         self.preview_error = None;
         self.preview_load_task = None;
         self.preview_request_id += 1;
@@ -420,9 +424,11 @@ impl FileFinder {
                                 return;
                             }
 
+                            let preview_text = Self::truncate_preview_text(buffer.read(cx).text());
+                            let buffer_for_editor = buffer.clone();
                             let editor = cx.new(|cx| {
                                 let mut editor = Editor::for_buffer(
-                                    buffer,
+                                    buffer_for_editor,
                                     Some(project_for_editor.clone()),
                                     window,
                                     cx,
@@ -433,6 +439,7 @@ impl FileFinder {
 
                             file_finder.preview_load_task = None;
                             file_finder.preview_editor = Some(editor);
+                            file_finder.preview_text = Some(preview_text);
                             file_finder.preview_error = None;
                             cx.notify();
                         })
@@ -453,6 +460,15 @@ impl FileFinder {
             }
         }));
         cx.notify();
+    }
+
+    fn truncate_preview_text(mut text: String) -> String {
+        const MAX_PREVIEW_CHARACTERS: usize = 20_000;
+        if text.len() > MAX_PREVIEW_CHARACTERS {
+            text.truncate(MAX_PREVIEW_CHARACTERS);
+            text.push_str("\n\n…");
+        }
+        text
     }
 
     pub fn modal_max_width(width_setting: FileFinderWidth, window: &mut Window) -> Pixels {
@@ -487,7 +503,17 @@ impl Render for FileFinder {
         let modal_width = picker_width + preview_width;
 
         let mut preview_body = v_flex().flex_1().min_h_0().overflow_hidden().p_2();
-        if let Some(editor) = self.preview_editor.clone() {
+        if let Some(preview_text) = self.preview_text.clone() {
+            preview_body = preview_body.p_0().child(
+                div()
+                    .size_full()
+                    .overflow_y_scroll()
+                    .p_2()
+                    .text_buffer(cx)
+                    .text_sm()
+                    .child(preview_text),
+            );
+        } else if let Some(editor) = self.preview_editor.clone() {
             preview_body = preview_body.p_0().child(div().size_full().child(editor));
         } else if let Some(error) = self.preview_error.clone() {
             preview_body = preview_body
