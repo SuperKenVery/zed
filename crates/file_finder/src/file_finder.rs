@@ -406,9 +406,38 @@ impl FileFinder {
             return;
         };
         self.preview_load_task = Some(cx.spawn_in(window, async move |file_finder, cx| {
+            let (languages, absolute_path) = match project.read_with(cx, |project, cx| {
+                (
+                    project.languages().clone(),
+                    project.absolute_path(&project_path, cx),
+                )
+            }) {
+                Ok(values) => values,
+                Err(error) => {
+                    file_finder
+                        .update(cx, |file_finder, cx| {
+                            file_finder.set_preview_error(
+                                request_id,
+                                &project_path,
+                                error.to_string(),
+                                cx,
+                            );
+                        })
+                        .log_err();
+                    return;
+                }
+            };
+
             let open_buffer_task = project.update(cx, |project, cx| {
                 project.open_buffer(project_path.clone(), cx)
             });
+            let preview_language = match absolute_path {
+                Some(absolute_path) => languages
+                    .load_language_for_file_path(absolute_path.as_path())
+                    .await
+                    .log_err(),
+                None => None,
+            };
 
             match open_buffer_task.await {
                 Ok(buffer) => {
@@ -417,6 +446,14 @@ impl FileFinder {
                         .update_in(cx, move |file_finder, window, cx| {
                             if !file_finder.is_current_preview_request(request_id, &project_path) {
                                 return;
+                            }
+
+                            if let Some(language) = preview_language.clone() {
+                                buffer.update(cx, |buffer, cx| {
+                                    if buffer.language().is_none() {
+                                        buffer.set_language(Some(language), cx);
+                                    }
+                                });
                             }
 
                             let editor = cx.new(|cx| {
