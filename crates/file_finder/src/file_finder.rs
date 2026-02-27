@@ -407,24 +407,9 @@ impl FileFinder {
 
         let project = self.picker.read(cx).delegate.project.clone();
         self.preview_load_task = Some(cx.spawn_in(window, async move |file_finder, cx| {
-            let open_buffer_task = match project.update(cx, |project, cx| {
+            let open_buffer_task = project.update(cx, |project, cx| {
                 project.open_buffer(project_path.clone(), cx)
-            }) {
-                Ok(task) => task,
-                Err(error) => {
-                    file_finder
-                        .update(cx, |file_finder, cx| {
-                            file_finder.set_preview_error(
-                                request_id,
-                                &project_path,
-                                error.to_string(),
-                                cx,
-                            );
-                        })
-                        .log_err();
-                    return;
-                }
-            };
+            });
 
             match open_buffer_task.await {
                 Ok(buffer) => {
@@ -1099,7 +1084,8 @@ impl FileFinderDelegate {
                 .update_in(cx, |picker, window, cx| {
                     picker
                         .delegate
-                        .set_search_matches(search_id, did_cancel, query, matches, window, cx);
+                        .set_search_matches(search_id, did_cancel, query, matches, cx);
+                    picker.delegate.update_preview_selection(window, cx);
                     anyhow::Ok(())
                 })
                 .log_err();
@@ -1112,7 +1098,6 @@ impl FileFinderDelegate {
         did_cancel: bool,
         query: FileSearchQuery,
         matches: impl IntoIterator<Item = ProjectPanelOrdMatch>,
-        window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) {
         if search_id >= self.latest_search_id {
@@ -1200,7 +1185,6 @@ impl FileFinderDelegate {
             self.latest_search_query = Some(query);
             self.latest_search_did_cancel = did_cancel;
 
-            self.update_preview_selection(window, cx);
             cx.notify();
         }
     }
@@ -1441,14 +1425,8 @@ impl FileFinderDelegate {
                 .update_in(cx, |picker, window, cx| {
                     let picker_delegate = &mut picker.delegate;
                     let search_id = util::post_inc(&mut picker_delegate.search_count);
-                    picker_delegate.set_search_matches(
-                        search_id,
-                        false,
-                        query,
-                        path_matches,
-                        window,
-                        cx,
-                    );
+                    picker_delegate.set_search_matches(search_id, false, query, path_matches, cx);
+                    picker_delegate.update_preview_selection(window, cx);
 
                     anyhow::Ok(())
                 })
