@@ -26,12 +26,15 @@ use settings::Settings;
 use std::{
     borrow::Cow,
     cmp,
+    fs::OpenOptions as FsOpenOptions,
+    io::Write,
     ops::Range,
     path::{Component, Path, PathBuf},
     sync::{
         Arc,
         atomic::{self, AtomicBool},
     },
+    time::{SystemTime, UNIX_EPOCH},
 };
 use text::Point;
 use ui::{
@@ -97,6 +100,40 @@ pub struct FileFinder {
 enum PreviewSelection {
     Existing(ProjectPath),
     CreateNew(ProjectPath),
+}
+
+fn append_debug_log(
+    hypothesis_id: &'static str,
+    location: &'static str,
+    message: &'static str,
+    data: String,
+) {
+    let timestamp = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis(),
+        Err(error) => {
+            eprintln!("debug log timestamp error: {error}");
+            0
+        }
+    };
+    let escaped_data = data.replace('\\', "\\\\").replace('"', "\\\"");
+    let line = format!(
+        r#"{{"hypothesisId":"{hypothesis_id}","location":"{location}","message":"{message}","data":{{"details":"{escaped_data}"}},"timestamp":{timestamp}}}"#
+    );
+
+    match FsOpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/opt/cursor/logs/debug.log")
+    {
+        Ok(mut file) => {
+            if let Err(error) = writeln!(file, "{line}") {
+                eprintln!("debug log write error: {error}");
+            }
+        }
+        Err(error) => {
+            eprintln!("debug log open error: {error}");
+        }
+    }
 }
 
 pub fn init(cx: &mut App) {
@@ -390,7 +427,26 @@ impl FileFinder {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // #region agent log
+        append_debug_log(
+            "H1",
+            "file_finder.rs:set_preview_selection",
+            "set_preview_selection entry",
+            format!(
+                "current={:?}; next={:?}",
+                self.preview_selection, preview_selection
+            ),
+        );
+        // #endregion
         if self.preview_selection == preview_selection {
+            // #region agent log
+            append_debug_log(
+                "H1",
+                "file_finder.rs:set_preview_selection",
+                "selection unchanged early return",
+                format!("selection={:?}", preview_selection),
+            );
+            // #endregion
             return;
         }
 
@@ -413,6 +469,14 @@ impl FileFinder {
 
             match open_buffer_task.await {
                 Ok(buffer) => {
+                    // #region agent log
+                    append_debug_log(
+                        "H2",
+                        "file_finder.rs:set_preview_selection",
+                        "open_buffer_task resolved",
+                        format!("request_id={request_id}; path={:?}", project_path),
+                    );
+                    // #endregion
                     let project_for_editor = project.clone();
                     file_finder
                         .update_in(cx, move |file_finder, window, cx| {
@@ -434,11 +498,31 @@ impl FileFinder {
                             file_finder.preview_load_task = None;
                             file_finder.preview_editor = Some(editor);
                             file_finder.preview_error = None;
+                            // #region agent log
+                            append_debug_log(
+                                "H2",
+                                "file_finder.rs:set_preview_selection",
+                                "preview editor stored",
+                                format!(
+                                    "request_id={request_id}; selection={:?}; has_editor={}",
+                                    file_finder.preview_selection,
+                                    file_finder.preview_editor.is_some()
+                                ),
+                            );
+                            // #endregion
                             cx.notify();
                         })
                         .log_err();
                 }
                 Err(error) => {
+                    // #region agent log
+                    append_debug_log(
+                        "H3",
+                        "file_finder.rs:set_preview_selection",
+                        "open_buffer_task failed",
+                        format!("request_id={request_id}; error={error}"),
+                    );
+                    // #endregion
                     file_finder
                         .update(cx, |file_finder, cx| {
                             file_finder.set_preview_error(
@@ -488,7 +572,7 @@ impl Render for FileFinder {
 
         let mut preview_body = v_flex().flex_1().min_h_0().overflow_hidden().p_2();
         if let Some(editor) = self.preview_editor.clone() {
-            preview_body = preview_body.p_0().child(editor);
+            preview_body = preview_body.p_0().child(div().size_full().child(editor));
         } else if let Some(error) = self.preview_error.clone() {
             preview_body = preview_body
                 .child(Label::new(format!("Unable to preview file: {error}")).color(Color::Muted));
@@ -505,6 +589,7 @@ impl Render for FileFinder {
         h_flex()
             .key_context(key_context)
             .w(modal_width)
+            .items_stretch()
             .elevation_3(cx)
             .on_modifiers_changed(cx.listener(Self::handle_modifiers_changed))
             .on_action(cx.listener(Self::handle_select_prev))
@@ -1488,6 +1573,19 @@ impl FileFinderDelegate {
     fn update_preview_selection(&self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
         cx.defer_in(window, |picker, window, cx| {
             let preview_selection = picker.delegate.selected_preview_selection(cx);
+            // #region agent log
+            append_debug_log(
+                "H1",
+                "file_finder.rs:update_preview_selection",
+                "deferred preview selection",
+                format!(
+                    "selected_index={}; selection={:?}; match_count={}",
+                    picker.delegate.selected_index(),
+                    preview_selection,
+                    picker.delegate.matches.len()
+                ),
+            );
+            // #endregion
             let project = picker.delegate.project.clone();
             picker
                 .delegate
