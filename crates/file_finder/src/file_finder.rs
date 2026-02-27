@@ -35,8 +35,8 @@ use std::{
 };
 use text::Point;
 use ui::{
-    ButtonLike, ContextMenu, HighlightedLabel, Indicator, KeyBinding, ListItem, ListItemSpacing,
-    PopoverMenu, PopoverMenuHandle, TintColor, Tooltip, prelude::*,
+    ButtonLike, ContextMenu, Divider, HighlightedLabel, Indicator, KeyBinding, ListItem,
+    ListItemSpacing, PopoverMenu, PopoverMenuHandle, TintColor, Tooltip, prelude::*,
 };
 use util::{
     ResultExt, maybe,
@@ -86,6 +86,17 @@ pub struct FileFinder {
     picker: Entity<Picker<FileFinderDelegate>>,
     picker_focus_handle: FocusHandle,
     init_modifiers: Option<Modifiers>,
+    preview_selection: Option<PreviewSelection>,
+    preview_editor: Option<Entity<Editor>>,
+    preview_error: Option<String>,
+    preview_load_task: Option<Task<()>>,
+    preview_request_id: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PreviewSelection {
+    Existing(ProjectPath),
+    CreateNew(ProjectPath),
 }
 
 pub fn init(cx: &mut App) {
@@ -184,7 +195,7 @@ impl FileFinder {
     }
 
     fn new(delegate: FileFinderDelegate, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx));
+        let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx).modal(false));
         let picker_focus_handle = picker.focus_handle(cx);
         picker.update(cx, |picker, _| {
             picker.delegate.focus_handle = picker_focus_handle.clone();
@@ -193,6 +204,11 @@ impl FileFinder {
             picker,
             picker_focus_handle,
             init_modifiers: window.modifiers().modified().then_some(window.modifiers()),
+            preview_selection: None,
+            preview_editor: None,
+            preview_error: None,
+            preview_load_task: None,
+            preview_request_id: 0,
         }
     }
 
@@ -343,6 +359,117 @@ impl FileFinder {
         })
     }
 
+    fn is_current_preview_request(&self, request_id: usize, project_path: &ProjectPath) -> bool {
+        self.preview_request_id == request_id
+            && self.preview_selection.as_ref().is_some_and(
+                |selection| matches!(selection, PreviewSelection::Existing(path) if path == project_path),
+            )
+    }
+
+    fn set_preview_error(
+        &mut self,
+        request_id: usize,
+        project_path: &ProjectPath,
+        error: String,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_current_preview_request(request_id, project_path) {
+            return;
+        }
+
+        self.preview_load_task = None;
+        self.preview_editor = None;
+        self.preview_error = Some(error);
+        cx.notify();
+    }
+
+    fn set_preview_selection(
+        &mut self,
+        preview_selection: Option<PreviewSelection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preview_selection == preview_selection {
+            return;
+        }
+
+        self.preview_selection = preview_selection.clone();
+        self.preview_editor = None;
+        self.preview_error = None;
+        self.preview_load_task = None;
+        self.preview_request_id += 1;
+        let request_id = self.preview_request_id;
+
+        let Some(PreviewSelection::Existing(project_path)) = preview_selection else {
+            cx.notify();
+            return;
+        };
+
+        let project = self.picker.read(cx).delegate.project.clone();
+        self.preview_load_task = Some(cx.spawn_in(window, async move |file_finder, cx| {
+            let open_buffer_task = match project.update(cx, |project, cx| {
+                project.open_buffer(project_path.clone(), cx)
+            }) {
+                Ok(task) => task,
+                Err(error) => {
+                    file_finder
+                        .update(cx, |file_finder, cx| {
+                            file_finder.set_preview_error(
+                                request_id,
+                                &project_path,
+                                error.to_string(),
+                                cx,
+                            );
+                        })
+                        .log_err();
+                    return;
+                }
+            };
+
+            match open_buffer_task.await {
+                Ok(buffer) => {
+                    let project_for_editor = project.clone();
+                    file_finder
+                        .update_in(cx, move |file_finder, window, cx| {
+                            if !file_finder.is_current_preview_request(request_id, &project_path) {
+                                return;
+                            }
+
+                            let editor = cx.new(|cx| {
+                                let mut editor = Editor::for_buffer(
+                                    buffer,
+                                    Some(project_for_editor.clone()),
+                                    window,
+                                    cx,
+                                );
+                                editor.set_read_only(true);
+                                editor
+                            });
+
+                            file_finder.preview_load_task = None;
+                            file_finder.preview_editor = Some(editor);
+                            file_finder.preview_error = None;
+                            cx.notify();
+                        })
+                        .log_err();
+                }
+                Err(error) => {
+                    file_finder
+                        .update(cx, |file_finder, cx| {
+                            file_finder.set_preview_error(
+                                request_id,
+                                &project_path,
+                                error.to_string(),
+                                cx,
+                            );
+                        })
+                        .log_err();
+                }
+            }
+        }));
+        cx.notify();
+    }
+
     pub fn modal_max_width(width_setting: FileFinderWidth, window: &mut Window) -> Pixels {
         let window_width = window.viewport_size().width;
         let small_width = rems(34.).to_pixels(window.rem_size());
@@ -370,11 +497,30 @@ impl Render for FileFinder {
         let key_context = self.picker.read(cx).delegate.key_context(window, cx);
 
         let file_finder_settings = FileFinderSettings::get_global(cx);
-        let modal_max_width = Self::modal_max_width(file_finder_settings.modal_max_width, window);
+        let picker_width = Self::modal_max_width(file_finder_settings.modal_max_width, window);
+        let preview_width = rems(34.).to_pixels(window.rem_size());
+        let modal_width = picker_width + preview_width;
 
-        v_flex()
+        let mut preview_body = v_flex().flex_1().min_h_0().overflow_hidden().p_2();
+        if let Some(editor) = self.preview_editor.clone() {
+            preview_body = preview_body.p_0().child(editor);
+        } else if let Some(error) = self.preview_error.clone() {
+            preview_body = preview_body
+                .child(Label::new(format!("Unable to preview file: {error}")).color(Color::Muted));
+        } else if self.preview_load_task.is_some() {
+            preview_body = preview_body.child(Label::new("Loading preview...").color(Color::Muted));
+        } else if matches!(self.preview_selection, Some(PreviewSelection::CreateNew(_))) {
+            preview_body = preview_body
+                .child(Label::new("Create the selected file to preview it.").color(Color::Muted));
+        } else {
+            preview_body =
+                preview_body.child(Label::new("Select a file to preview.").color(Color::Muted));
+        }
+
+        h_flex()
             .key_context(key_context)
-            .w(modal_max_width)
+            .w(modal_width)
+            .elevation_3(cx)
             .on_modifiers_changed(cx.listener(Self::handle_modifiers_changed))
             .on_action(cx.listener(Self::handle_select_prev))
             .on_action(cx.listener(Self::handle_filter_toggle_menu))
@@ -384,7 +530,30 @@ impl Render for FileFinder {
             .on_action(cx.listener(Self::go_to_file_split_right))
             .on_action(cx.listener(Self::go_to_file_split_up))
             .on_action(cx.listener(Self::go_to_file_split_down))
-            .child(self.picker.clone())
+            .child(
+                v_flex()
+                    .w(picker_width)
+                    .min_w_0()
+                    .child(self.picker.clone()),
+            )
+            .child(Divider::vertical())
+            .child(
+                v_flex()
+                    .id("file-finder-preview-pane")
+                    .w(preview_width)
+                    .min_w_0()
+                    .bg(cx.theme().colors().editor_background)
+                    .child(
+                        h_flex()
+                            .h_8()
+                            .px_2()
+                            .items_center()
+                            .border_b_1()
+                            .border_color(cx.theme().colors().border_variant)
+                            .child(Label::new("Preview").size(LabelSize::Small)),
+                    )
+                    .child(preview_body),
+            )
     }
 }
 
@@ -927,10 +1096,11 @@ impl FileFinderDelegate {
             .map(ProjectPanelOrdMatch);
             let did_cancel = cancel_flag.load(atomic::Ordering::Acquire);
             picker
-                .update(cx, |picker, cx| {
+                .update_in(cx, |picker, window, cx| {
                     picker
                         .delegate
-                        .set_search_matches(search_id, did_cancel, query, matches, cx)
+                        .set_search_matches(search_id, did_cancel, query, matches, window, cx);
+                    anyhow::Ok(())
                 })
                 .log_err();
         })
@@ -942,6 +1112,7 @@ impl FileFinderDelegate {
         did_cancel: bool,
         query: FileSearchQuery,
         matches: impl IntoIterator<Item = ProjectPanelOrdMatch>,
+        window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) {
         if search_id >= self.latest_search_id {
@@ -1029,6 +1200,7 @@ impl FileFinderDelegate {
             self.latest_search_query = Some(query);
             self.latest_search_did_cancel = did_cancel;
 
+            self.update_preview_selection(window, cx);
             cx.notify();
         }
     }
@@ -1266,10 +1438,17 @@ impl FileFinderDelegate {
             }
 
             picker
-                .update_in(cx, |picker, _, cx| {
+                .update_in(cx, |picker, window, cx| {
                     let picker_delegate = &mut picker.delegate;
                     let search_id = util::post_inc(&mut picker_delegate.search_count);
-                    picker_delegate.set_search_matches(search_id, false, query, path_matches, cx);
+                    picker_delegate.set_search_matches(
+                        search_id,
+                        false,
+                        query,
+                        path_matches,
+                        window,
+                        cx,
+                    );
 
                     anyhow::Ok(())
                 })
@@ -1291,6 +1470,50 @@ impl FileFinderDelegate {
         }
 
         0
+    }
+
+    fn preview_selection_for_match(
+        &self,
+        matched_path: &Match,
+        cx: &mut Context<Picker<Self>>,
+    ) -> Option<PreviewSelection> {
+        match matched_path {
+            Match::History { path, .. } => {
+                let worktree_id = path.project.worktree_id;
+                self.project
+                    .read(cx)
+                    .worktree_for_id(worktree_id, cx)
+                    .map(|_| {
+                        PreviewSelection::Existing(ProjectPath {
+                            worktree_id,
+                            path: Arc::clone(&path.project.path),
+                        })
+                    })
+            }
+            Match::Search(path_match) => Some(PreviewSelection::Existing(ProjectPath {
+                worktree_id: WorktreeId::from_usize(path_match.0.worktree_id),
+                path: path_match.0.path.clone(),
+            })),
+            Match::CreateNew(path) => Some(PreviewSelection::CreateNew(path.clone())),
+        }
+    }
+
+    fn selected_preview_selection(
+        &self,
+        cx: &mut Context<Picker<Self>>,
+    ) -> Option<PreviewSelection> {
+        self.matches
+            .get(self.selected_index())
+            .and_then(|matched_path| self.preview_selection_for_match(matched_path, cx))
+    }
+
+    fn update_preview_selection(&self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
+        let preview_selection = self.selected_preview_selection(cx);
+        self.file_finder
+            .update(cx, |file_finder, cx| {
+                file_finder.set_preview_selection(preview_selection, window, cx);
+            })
+            .log_err();
     }
 
     fn key_context(&self, window: &Window, cx: &App) -> KeyContext {
@@ -1332,9 +1555,15 @@ impl PickerDelegate for FileFinderDelegate {
         self.selected_index
     }
 
-    fn set_selected_index(&mut self, ix: usize, _: &mut Window, cx: &mut Context<Picker<Self>>) {
+    fn set_selected_index(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Picker<Self>>,
+    ) {
         self.has_changed_selected_index = true;
         self.selected_index = ix;
+        self.update_preview_selection(window, cx);
         cx.notify();
     }
 
@@ -1423,6 +1652,7 @@ impl PickerDelegate for FileFinderDelegate {
                 self.first_update = false;
                 self.selected_index = 0;
             }
+            self.update_preview_selection(window, cx);
             cx.notify();
             Task::ready(())
         } else {
