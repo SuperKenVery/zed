@@ -390,7 +390,7 @@ impl FileFinder {
         &mut self,
         preview_selection: Option<PreviewSelection>,
         project: Entity<Project>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.preview_selection == preview_selection {
@@ -410,55 +410,54 @@ impl FileFinder {
             return;
         };
 
-        self.preview_load_task = Some(cx.spawn_in(window, async move |file_finder, cx| {
-            let open_buffer_task = project.update(cx, |project, cx| {
-                project.open_buffer(project_path.clone(), cx)
-            });
+        let (fs, absolute_path) = project.read_with(cx, |project, cx| {
+            (project.fs(), project.absolute_path(&project_path, cx))
+        });
+        let Some(absolute_path) = absolute_path else {
+            self.set_preview_error(
+                request_id,
+                &project_path,
+                "Unable to resolve file path for preview.".to_string(),
+                cx,
+            );
+            return;
+        };
 
-            match open_buffer_task.await {
-                Ok(buffer) => {
-                    let project_for_editor = project.clone();
-                    file_finder
-                        .update_in(cx, move |file_finder, window, cx| {
-                            if !file_finder.is_current_preview_request(request_id, &project_path) {
-                                return;
-                            }
+        self.preview_load_task =
+            Some(cx.spawn(
+                async move |file_finder, cx| match fs.load(&absolute_path).await {
+                    Ok(contents) => {
+                        file_finder
+                            .update(cx, move |file_finder, cx| {
+                                if !file_finder
+                                    .is_current_preview_request(request_id, &project_path)
+                                {
+                                    return;
+                                }
 
-                            let preview_text = Self::truncate_preview_text(buffer.read(cx).text());
-                            let buffer_for_editor = buffer.clone();
-                            let editor = cx.new(|cx| {
-                                let mut editor = Editor::for_buffer(
-                                    buffer_for_editor,
-                                    Some(project_for_editor.clone()),
-                                    window,
+                                file_finder.preview_load_task = None;
+                                file_finder.preview_editor = None;
+                                file_finder.preview_text =
+                                    Some(Self::truncate_preview_text(contents));
+                                file_finder.preview_error = None;
+                                cx.notify();
+                            })
+                            .log_err();
+                    }
+                    Err(error) => {
+                        file_finder
+                            .update(cx, |file_finder, cx| {
+                                file_finder.set_preview_error(
+                                    request_id,
+                                    &project_path,
+                                    error.to_string(),
                                     cx,
                                 );
-                                editor.set_read_only(true);
-                                editor
-                            });
-
-                            file_finder.preview_load_task = None;
-                            file_finder.preview_editor = Some(editor);
-                            file_finder.preview_text = Some(preview_text);
-                            file_finder.preview_error = None;
-                            cx.notify();
-                        })
-                        .log_err();
-                }
-                Err(error) => {
-                    file_finder
-                        .update(cx, |file_finder, cx| {
-                            file_finder.set_preview_error(
-                                request_id,
-                                &project_path,
-                                error.to_string(),
-                                cx,
-                            );
-                        })
-                        .log_err();
-                }
-            }
-        }));
+                            })
+                            .log_err();
+                    }
+                },
+            ));
         cx.notify();
     }
 
