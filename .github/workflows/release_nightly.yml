@@ -329,7 +329,6 @@ jobs:
         Write-Host "Publishing version: $version on release channel nightly"
         "nightly" | Set-Content -Path "crates/zed/RELEASE_CHANNEL"
       shell: pwsh
-      working-directory: ${{ env.ZED_WORKSPACE }}
     - name: steps::setup_sentry
       uses: matbour/setup-sentry-cli@3e938c54b3018bdd019973689ef984e033b0454b
       with:
@@ -337,7 +336,6 @@ jobs:
     - name: run_bundling::bundle_windows::bundle_windows
       run: script/bundle-windows.ps1 -Architecture aarch64
       shell: pwsh
-      working-directory: ${{ env.ZED_WORKSPACE }}
     - name: '@actions/upload-artifact Zed-aarch64.exe'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
@@ -387,7 +385,6 @@ jobs:
         Write-Host "Publishing version: $version on release channel nightly"
         "nightly" | Set-Content -Path "crates/zed/RELEASE_CHANNEL"
       shell: pwsh
-      working-directory: ${{ env.ZED_WORKSPACE }}
     - name: steps::setup_sentry
       uses: matbour/setup-sentry-cli@3e938c54b3018bdd019973689ef984e033b0454b
       with:
@@ -395,7 +392,6 @@ jobs:
     - name: run_bundling::bundle_windows::bundle_windows
       run: script/bundle-windows.ps1 -Architecture x86_64
       shell: pwsh
-      working-directory: ${{ env.ZED_WORKSPACE }}
     - name: '@actions/upload-artifact Zed-x86_64.exe'
       uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
       with:
