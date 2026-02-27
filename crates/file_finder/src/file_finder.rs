@@ -507,7 +507,6 @@ impl Render for FileFinder {
             preview_body = preview_body.p_0().child(
                 div()
                     .size_full()
-                    .overflow_y_scroll()
                     .p_2()
                     .text_buffer(cx)
                     .text_sm()
