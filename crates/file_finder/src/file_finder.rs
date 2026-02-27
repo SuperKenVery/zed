@@ -506,10 +506,11 @@ impl Render for FileFinder {
         let picker_width = Self::modal_max_width(file_finder_settings.modal_max_width, window);
         let preview_width = rems(34.).to_pixels(window.rem_size());
         let modal_width = picker_width + preview_width;
+        let modal_max_height = vh(0.7, window);
 
-        let mut preview_body = v_flex().flex_1().min_h_0().overflow_hidden().p_2();
+        let mut preview_body = v_flex().min_h_0().overflow_hidden().p_2();
         if let Some(editor) = self.preview_editor.clone() {
-            preview_body = preview_body.p_0().child(div().size_full().child(editor));
+            preview_body = preview_body.p_0().child(div().w_full().child(editor));
         } else if let Some(error) = self.preview_error.clone() {
             preview_body = preview_body
                 .child(Label::new(format!("Unable to preview file: {error}")).color(Color::Muted));
@@ -526,7 +527,9 @@ impl Render for FileFinder {
         h_flex()
             .key_context(key_context)
             .w(modal_width)
+            .max_h(modal_max_height)
             .items_stretch()
+            .overflow_hidden()
             .elevation_3(cx)
             .on_modifiers_changed(cx.listener(Self::handle_modifiers_changed))
             .on_action(cx.listener(Self::handle_select_prev))
@@ -541,6 +544,7 @@ impl Render for FileFinder {
                 v_flex()
                     .w(picker_width)
                     .min_w_0()
+                    .overflow_hidden()
                     .child(self.picker.clone()),
             )
             .child(Divider::vertical())
@@ -549,6 +553,7 @@ impl Render for FileFinder {
                     .id("file-finder-preview-pane")
                     .w(preview_width)
                     .min_w_0()
+                    .overflow_hidden()
                     .bg(cx.theme().colors().editor_background)
                     .child(
                         h_flex()
