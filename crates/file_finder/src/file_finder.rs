@@ -26,15 +26,12 @@ use settings::Settings;
 use std::{
     borrow::Cow,
     cmp,
-    fs::OpenOptions as FsOpenOptions,
-    io::Write,
     ops::Range,
     path::{Component, Path, PathBuf},
     sync::{
         Arc,
         atomic::{self, AtomicBool},
     },
-    time::{SystemTime, UNIX_EPOCH},
 };
 use text::Point;
 use ui::{
@@ -100,40 +97,6 @@ pub struct FileFinder {
 enum PreviewSelection {
     Existing(ProjectPath),
     CreateNew(ProjectPath),
-}
-
-fn append_debug_log(
-    hypothesis_id: &'static str,
-    location: &'static str,
-    message: &'static str,
-    data: String,
-) {
-    let timestamp = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_millis(),
-        Err(error) => {
-            eprintln!("debug log timestamp error: {error}");
-            0
-        }
-    };
-    let escaped_data = data.replace('\\', "\\\\").replace('"', "\\\"");
-    let line = format!(
-        r#"{{"hypothesisId":"{hypothesis_id}","location":"{location}","message":"{message}","data":{{"details":"{escaped_data}"}},"timestamp":{timestamp}}}"#
-    );
-
-    match FsOpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/opt/cursor/logs/debug.log")
-    {
-        Ok(mut file) => {
-            if let Err(error) = writeln!(file, "{line}") {
-                eprintln!("debug log write error: {error}");
-            }
-        }
-        Err(error) => {
-            eprintln!("debug log open error: {error}");
-        }
-    }
 }
 
 pub fn init(cx: &mut App) {
@@ -427,26 +390,7 @@ impl FileFinder {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // #region agent log
-        append_debug_log(
-            "H2",
-            "file_finder.rs:set_preview_selection",
-            "entry",
-            format!(
-                "request_id={}; current={:?}; next={:?}",
-                self.preview_request_id, self.preview_selection, preview_selection
-            ),
-        );
-        // #endregion
         if self.preview_selection == preview_selection {
-            // #region agent log
-            append_debug_log(
-                "H2",
-                "file_finder.rs:set_preview_selection",
-                "early_return_same_selection",
-                format!("selection={:?}", preview_selection),
-            );
-            // #endregion
             return;
         }
 
@@ -468,29 +412,10 @@ impl FileFinder {
 
             match open_buffer_task.await {
                 Ok(buffer) => {
-                    // #region agent log
-                    append_debug_log(
-                        "H3",
-                        "file_finder.rs:set_preview_selection",
-                        "open_buffer_ok",
-                        format!("request_id={request_id}; path={:?}", project_path),
-                    );
-                    // #endregion
                     let project_for_editor = project.clone();
                     file_finder
                         .update_in(cx, move |file_finder, window, cx| {
                             if !file_finder.is_current_preview_request(request_id, &project_path) {
-                                // #region agent log
-                                append_debug_log(
-                                    "H3",
-                                    "file_finder.rs:set_preview_selection",
-                                    "discard_stale_request",
-                                    format!(
-                                        "request_id={request_id}; current_request_id={}; current_selection={:?}",
-                                        file_finder.preview_request_id, file_finder.preview_selection
-                                    ),
-                                );
-                                // #endregion
                                 return;
                             }
 
@@ -508,18 +433,6 @@ impl FileFinder {
                             file_finder.preview_load_task = None;
                             file_finder.preview_editor = Some(editor);
                             file_finder.preview_error = None;
-                            // #region agent log
-                            append_debug_log(
-                                "H4",
-                                "file_finder.rs:set_preview_selection",
-                                "preview_editor_updated",
-                                format!(
-                                    "request_id={request_id}; selection={:?}; has_editor={}",
-                                    file_finder.preview_selection,
-                                    file_finder.preview_editor.is_some()
-                                ),
-                            );
-                            // #endregion
                             cx.notify();
                         })
                         .log_err();
@@ -1575,19 +1488,6 @@ impl FileFinderDelegate {
     fn update_preview_selection(&self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
         cx.defer_in(window, |picker, window, cx| {
             let preview_selection = picker.delegate.selected_preview_selection(cx);
-            // #region agent log
-            append_debug_log(
-                "H1",
-                "file_finder.rs:update_preview_selection",
-                "deferred_selection",
-                format!(
-                    "selected_index={}; match_count={}; selection={:?}",
-                    picker.delegate.selected_index(),
-                    picker.delegate.matches.len(),
-                    preview_selection
-                ),
-            );
-            // #endregion
             let project = picker.delegate.project.clone();
             picker
                 .delegate
@@ -1644,17 +1544,6 @@ impl PickerDelegate for FileFinderDelegate {
         window: &mut Window,
         cx: &mut Context<Picker<Self>>,
     ) {
-        // #region agent log
-        append_debug_log(
-            "H5",
-            "file_finder.rs:set_selected_index",
-            "selection_changed",
-            format!(
-                "old_index={}; new_index={}; match_count={}",
-                self.selected_index, ix, self.matches.len()
-            ),
-        );
-        // #endregion
         self.has_changed_selected_index = true;
         self.selected_index = ix;
         self.update_preview_selection(window, cx);
