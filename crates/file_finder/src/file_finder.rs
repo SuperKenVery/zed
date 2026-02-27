@@ -1486,12 +1486,16 @@ impl FileFinderDelegate {
     }
 
     fn update_preview_selection(&self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
-        let preview_selection = self.selected_preview_selection(cx);
-        self.file_finder
-            .update(cx, |file_finder, cx| {
-                file_finder.set_preview_selection(preview_selection, window, cx);
-            })
-            .log_err();
+        cx.defer_in(window, |picker, window, cx| {
+            let preview_selection = picker.delegate.selected_preview_selection(cx);
+            picker
+                .delegate
+                .file_finder
+                .update(cx, |file_finder, cx| {
+                    file_finder.set_preview_selection(preview_selection, window, cx);
+                })
+                .log_err();
+        });
     }
 
     fn key_context(&self, window: &Window, cx: &App) -> KeyContext {
