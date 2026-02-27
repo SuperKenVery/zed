@@ -540,7 +540,7 @@ impl Render for FileFinder {
             .w(modal_width)
             .max_h(modal_max_height)
             .when_some(preview_modal_min_height, |this, min_height| {
-                this.min_h(min_height.min(modal_max_height))
+                this.min_h(min_height)
             })
             .items_stretch()
             .overflow_hidden()
