@@ -91,7 +91,6 @@ pub struct FileFinder {
     init_modifiers: Option<Modifiers>,
     preview_selection: Option<PreviewSelection>,
     preview_editor: Option<Entity<Editor>>,
-    preview_text: Option<String>,
     preview_error: Option<String>,
     preview_load_task: Option<Task<()>>,
     preview_request_id: usize,
@@ -244,7 +243,6 @@ impl FileFinder {
             init_modifiers: window.modifiers().modified().then_some(window.modifiers()),
             preview_selection: None,
             preview_editor: None,
-            preview_text: None,
             preview_error: None,
             preview_load_task: None,
             preview_request_id: 0,
@@ -418,7 +416,6 @@ impl FileFinder {
 
         self.preview_load_task = None;
         self.preview_editor = None;
-        self.preview_text = None;
         self.preview_error = Some(error);
         cx.notify();
     }
@@ -427,7 +424,7 @@ impl FileFinder {
         &mut self,
         preview_selection: Option<PreviewSelection>,
         project: Entity<Project>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // #region agent log
@@ -455,7 +452,6 @@ impl FileFinder {
 
         self.preview_selection = preview_selection.clone();
         self.preview_editor = None;
-        self.preview_text = None;
         self.preview_error = None;
         self.preview_load_task = None;
         self.preview_request_id += 1;
@@ -465,103 +461,84 @@ impl FileFinder {
             cx.notify();
             return;
         };
+        self.preview_load_task = Some(cx.spawn_in(window, async move |file_finder, cx| {
+            let open_buffer_task = project.update(cx, |project, cx| {
+                project.open_buffer(project_path.clone(), cx)
+            });
 
-        let (fs, absolute_path) = project.read_with(cx, |project, cx| {
-            (
-                project.fs().clone(),
-                project.absolute_path(&project_path, cx),
-            )
-        });
-        let Some(absolute_path) = absolute_path else {
-            self.set_preview_error(
-                request_id,
-                &project_path,
-                "Unable to resolve file path for preview.".to_string(),
-                cx,
-            );
-            return;
-        };
-
-        self.preview_load_task =
-            Some(cx.spawn(
-                async move |file_finder, cx| match fs.load(&absolute_path).await {
-                    Ok(contents) => {
-                        // #region agent log
-                        append_debug_log(
-                            "H3",
-                            "file_finder.rs:set_preview_selection",
-                            "file_load_ok",
-                            format!(
-                                "request_id={request_id}; path={:?}; bytes={}",
-                                project_path,
-                                contents.len()
-                            ),
-                        );
-                        // #endregion
-                        file_finder
-                            .update(cx, move |file_finder, cx| {
-                                if !file_finder
-                                    .is_current_preview_request(request_id, &project_path)
-                                {
-                                    // #region agent log
-                                    append_debug_log(
-                                        "H3",
-                                        "file_finder.rs:set_preview_selection",
-                                        "discard_stale_request",
-                                        format!(
-                                            "request_id={request_id}; current_request_id={}; current_selection={:?}",
-                                            file_finder.preview_request_id, file_finder.preview_selection
-                                        ),
-                                    );
-                                    // #endregion
-                                    return;
-                                }
-
-                                file_finder.preview_load_task = None;
-                                file_finder.preview_editor = None;
-                                file_finder.preview_text =
-                                    Some(Self::truncate_preview_text(contents));
-                                file_finder.preview_error = None;
+            match open_buffer_task.await {
+                Ok(buffer) => {
+                    // #region agent log
+                    append_debug_log(
+                        "H3",
+                        "file_finder.rs:set_preview_selection",
+                        "open_buffer_ok",
+                        format!("request_id={request_id}; path={:?}", project_path),
+                    );
+                    // #endregion
+                    let project_for_editor = project.clone();
+                    file_finder
+                        .update_in(cx, move |file_finder, window, cx| {
+                            if !file_finder.is_current_preview_request(request_id, &project_path) {
                                 // #region agent log
                                 append_debug_log(
-                                    "H4",
+                                    "H3",
                                     "file_finder.rs:set_preview_selection",
-                                    "preview_text_updated",
+                                    "discard_stale_request",
                                     format!(
-                                        "request_id={request_id}; selection={:?}; text_len={}",
-                                        file_finder.preview_selection,
-                                        file_finder.preview_text.as_ref().map_or(0, |text| text.len())
+                                        "request_id={request_id}; current_request_id={}; current_selection={:?}",
+                                        file_finder.preview_request_id, file_finder.preview_selection
                                     ),
                                 );
                                 // #endregion
-                                cx.notify();
-                            })
-                            .log_err();
-                    }
-                    Err(error) => {
-                        file_finder
-                            .update(cx, |file_finder, cx| {
-                                file_finder.set_preview_error(
-                                    request_id,
-                                    &project_path,
-                                    error.to_string(),
+                                return;
+                            }
+
+                            let editor = cx.new(|cx| {
+                                let mut editor = Editor::for_buffer(
+                                    buffer,
+                                    Some(project_for_editor.clone()),
+                                    window,
                                     cx,
                                 );
-                            })
-                            .log_err();
-                    }
-                },
-            ));
-        cx.notify();
-    }
+                                editor.set_read_only(true);
+                                editor
+                            });
 
-    fn truncate_preview_text(mut text: String) -> String {
-        const MAX_PREVIEW_CHARACTERS: usize = 20_000;
-        if text.len() > MAX_PREVIEW_CHARACTERS {
-            text.truncate(MAX_PREVIEW_CHARACTERS);
-            text.push_str("\n\n…");
-        }
-        text
+                            file_finder.preview_load_task = None;
+                            file_finder.preview_editor = Some(editor);
+                            file_finder.preview_error = None;
+                            // #region agent log
+                            append_debug_log(
+                                "H4",
+                                "file_finder.rs:set_preview_selection",
+                                "preview_editor_updated",
+                                format!(
+                                    "request_id={request_id}; selection={:?}; has_editor={}",
+                                    file_finder.preview_selection,
+                                    file_finder.preview_editor.is_some()
+                                ),
+                            );
+                            // #endregion
+                            cx.notify();
+                        })
+                        .log_err();
+                }
+                Err(error) => {
+                    file_finder
+                        .update(cx, |file_finder, cx| {
+                            file_finder.set_preview_error(
+                                request_id,
+                                &project_path,
+                                error.to_string(),
+                                cx,
+                            );
+                        })
+                        .log_err();
+                }
+            }
+        }));
+        cx.notify();
     }
 
     pub fn modal_max_width(width_setting: FileFinderWidth, window: &mut Window) -> Pixels {
@@ -596,16 +573,7 @@ impl Render for FileFinder {
         let modal_width = picker_width + preview_width;
 
         let mut preview_body = v_flex().flex_1().min_h_0().overflow_hidden().p_2();
-        if let Some(preview_text) = self.preview_text.clone() {
-            preview_body = preview_body.p_0().child(
-                div()
-                    .size_full()
-                    .p_2()
-                    .text_buffer(cx)
-                    .text_sm()
-                    .child(preview_text),
-            );
-        } else if let Some(editor) = self.preview_editor.clone() {
+        if let Some(editor) = self.preview_editor.clone() {
             preview_body = preview_body.p_0().child(div().size_full().child(editor));
         } else if let Some(error) = self.preview_error.clone() {
             preview_body = preview_body

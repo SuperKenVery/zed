@@ -3917,35 +3917,35 @@ async fn test_preview_updates_when_selection_changes(cx: &mut TestAppContext) {
         picker.set_selected_index(first_index, None, true, window, cx);
     });
     cx.run_until_parked();
-    let first_preview = workspace.update(cx, |workspace, cx| {
+    let first_preview_title = workspace.update(cx, |workspace, cx| {
         workspace
             .active_modal::<FileFinder>(cx)
             .expect("file finder should be open")
             .read(cx)
-            .preview_text
-            .clone()
+            .preview_editor
+            .as_ref()
+            .expect("first preview editor should be loaded")
+            .read(cx)
+            .title(cx)
     });
-    assert_matches!(
-        first_preview.as_deref(),
-        Some(text) if text.contains("FIRST PREVIEW CONTENT")
-    );
+    assert_eq!(first_preview_title, "file_finder.rs");
 
     picker.update_in(cx, |picker, window, cx| {
         picker.set_selected_index(second_index, None, true, window, cx);
     });
     cx.run_until_parked();
-    let second_preview = workspace.update(cx, |workspace, cx| {
+    let second_preview_title = workspace.update(cx, |workspace, cx| {
         workspace
             .active_modal::<FileFinder>(cx)
             .expect("file finder should be open")
             .read(cx)
-            .preview_text
-            .clone()
+            .preview_editor
+            .as_ref()
+            .expect("second preview editor should be loaded")
+            .read(cx)
+            .title(cx)
     });
-    assert_matches!(
-        second_preview.as_deref(),
-        Some(text) if text.contains("SECOND PREVIEW CONTENT")
-    );
+    assert_eq!(second_preview_title, "file_finder_tests.rs");
 }
 
 #[gpui::test]
