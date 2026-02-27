@@ -406,27 +406,12 @@ impl FileFinder {
             return;
         };
         self.preview_load_task = Some(cx.spawn_in(window, async move |file_finder, cx| {
-            let (languages, absolute_path) = match project.read_with(cx, |project, cx| {
+            let (languages, absolute_path) = project.read_with(cx, |project, cx| {
                 (
                     project.languages().clone(),
                     project.absolute_path(&project_path, cx),
                 )
-            }) {
-                Ok(values) => values,
-                Err(error) => {
-                    file_finder
-                        .update(cx, |file_finder, cx| {
-                            file_finder.set_preview_error(
-                                request_id,
-                                &project_path,
-                                error.to_string(),
-                                cx,
-                            );
-                        })
-                        .log_err();
-                    return;
-                }
-            };
+            });
 
             let open_buffer_task = project.update(cx, |project, cx| {
                 project.open_buffer(project_path.clone(), cx)
