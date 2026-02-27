@@ -3865,6 +3865,92 @@ async fn test_paths_with_starting_slash(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_preview_updates_when_selection_changes(cx: &mut TestAppContext) {
+    let app_state = init_test(cx);
+    app_state
+        .fs
+        .as_fake()
+        .insert_tree(
+            path!("/root"),
+            json!({
+                "file_finder.rs": "FIRST PREVIEW CONTENT",
+                "file_finder_tests.rs": "SECOND PREVIEW CONTENT",
+            }),
+        )
+        .await;
+
+    let project = Project::test(app_state.fs.clone(), [path!("/root").as_ref()], cx).await;
+    let (picker, workspace, cx) = build_find_picker(project, cx);
+
+    cx.simulate_input("file_finder");
+    cx.run_until_parked();
+
+    let (first_index, second_index) = picker.update(cx, |picker, _| {
+        let first_index = picker
+            .delegate
+            .matches
+            .matches
+            .iter()
+            .position(|matched_path| {
+                matches!(
+                    matched_path,
+                    Match::Search(path_match) if path_match.0.path.file_name() == Some("file_finder.rs")
+                )
+            })
+            .expect("first file should be present in search matches");
+        let second_index = picker
+            .delegate
+            .matches
+            .matches
+            .iter()
+            .position(|matched_path| {
+                matches!(
+                    matched_path,
+                    Match::Search(path_match) if path_match.0.path.file_name() == Some("file_finder_tests.rs")
+                )
+            })
+            .expect("second file should be present in search matches");
+        (first_index, second_index)
+    });
+
+    picker.update_in(cx, |picker, window, cx| {
+        picker.set_selected_index(first_index, None, true, window, cx);
+    });
+    cx.run_until_parked();
+    let first_preview_title = workspace.update(cx, |workspace, cx| {
+        workspace
+            .active_modal::<FileFinder>(cx)
+            .expect("file finder should be open")
+            .read(cx)
+            .preview_editor
+            .as_ref()
+            .expect("first preview editor should be loaded")
+            .read(cx)
+            .title(cx)
+            .to_string()
+    });
+    assert_eq!(first_preview_title, "file_finder.rs");
+
+    picker.update_in(cx, |picker, window, cx| {
+        picker.set_selected_index(second_index, None, true, window, cx);
+    });
+    cx.run_until_parked();
+    let second_preview_title = workspace.update(cx, |workspace, cx| {
+        workspace
+            .active_modal::<FileFinder>(cx)
+            .expect("file finder should be open")
+            .read(cx)
+            .preview_editor
+            .as_ref()
+            .expect("second preview editor should be loaded")
+            .read(cx)
+            .title(cx)
+            .to_string()
+    });
+    assert_eq!(second_preview_title, "file_finder_tests.rs");
+}
+
+#[gpui::test]
 async fn test_clear_navigation_history(cx: &mut TestAppContext) {
     let app_state = init_test(cx);
     app_state

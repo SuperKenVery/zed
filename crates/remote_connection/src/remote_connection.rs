@@ -177,6 +177,7 @@ impl RemoteConnectionModal {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        #[allow(unreachable_patterns)]
         let (connection_string, nickname, is_wsl, is_devcontainer) = match connection_options {
             RemoteConnectionOptions::Ssh(options) => (
                 options.connection_string(),
@@ -192,6 +193,7 @@ impl RemoteConnectionModal {
             RemoteConnectionOptions::Mock(options) => {
                 (format!("mock-{}", options.id), None, false, false)
             }
+            _ => ("mock".to_string(), None, false, false),
         };
         Self {
             prompt: cx.new(|cx| {

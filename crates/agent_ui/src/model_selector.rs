@@ -27,6 +27,7 @@ use zed_actions::agent::OpenSettings;
 use crate::ui::{HoldForDefault, ModelSelectorFooter, ModelSelectorHeader, ModelSelectorListItem};
 
 pub type AcpModelSelector = Picker<AcpModelPickerDelegate>;
+pub type ModelSelector = AcpModelSelector;
 
 pub fn acp_model_selector(
     selector: Rc<dyn AgentModelSelector>,
