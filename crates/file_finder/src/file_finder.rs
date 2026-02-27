@@ -411,7 +411,10 @@ impl FileFinder {
         };
 
         let (fs, absolute_path) = project.read_with(cx, |project, cx| {
-            (project.fs(), project.absolute_path(&project_path, cx))
+            (
+                project.fs().clone(),
+                project.absolute_path(&project_path, cx),
+            )
         });
         let Some(absolute_path) = absolute_path else {
             self.set_preview_error(
