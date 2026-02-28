@@ -3,8 +3,6 @@ use serde_json::Value;
 
 use crate::tasks::workflows::{runners::Platform, vars, vars::StepOutput};
 
-const SCCACHE_R2_BUCKET: &str = "sccache-zed";
-
 const BASH_SHELL: &str = "bash -euxo pipefail {0}";
 // https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepsshell
 pub const PWSH_SHELL: &str = "pwsh";
@@ -253,15 +251,28 @@ pub fn enable_windows_longpaths() -> Step<Run> {
     "#})
 }
 
+pub fn configure_sccache_gha_token() -> Step<Use> {
+    Step::new("steps::configure_sccache_gha_token")
+        .uses(
+            "actions",
+            "github-script",
+            "f28e40c7f34bde8b3046d885e986cb6290c5673b", // v7
+        )
+        .add_with((
+            "script",
+            indoc::indoc! {r#"
+                core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+                core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+            "#}
+            .trim(),
+        ))
+}
+
 pub fn setup_sccache(platform: Platform) -> Step<Run> {
-    let step = match platform {
+    match platform {
         Platform::Windows => named::pwsh("./script/setup-sccache.ps1"),
         Platform::Linux | Platform::Mac => named::bash("./script/setup-sccache"),
-    };
-    step.add_env(("R2_ACCOUNT_ID", vars::R2_ACCOUNT_ID))
-        .add_env(("R2_ACCESS_KEY_ID", vars::R2_ACCESS_KEY_ID))
-        .add_env(("R2_SECRET_ACCESS_KEY", vars::R2_SECRET_ACCESS_KEY))
-        .add_env(("SCCACHE_BUCKET", SCCACHE_R2_BUCKET))
+    }
 }
 
 pub fn show_sccache_stats(platform: Platform) -> Step<Run> {

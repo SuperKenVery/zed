@@ -339,6 +339,7 @@ fn check_workspace_binaries() -> NamedJob {
             .add_step(steps::setup_cargo_config(Platform::Linux))
             .add_step(steps::cache_rust_dependencies_namespace())
             .map(steps::install_linux_dependencies)
+            .add_step(steps::configure_sccache_gha_token())
             .add_step(steps::setup_sccache(Platform::Linux))
             .add_step(steps::script("cargo build -p collab"))
             .add_step(steps::script("cargo build --workspace --bins --examples"))
@@ -372,6 +373,7 @@ pub(crate) fn clippy(platform: Platform, require_owner_guard: bool) -> NamedJob 
                 platform == Platform::Linux,
                 steps::install_linux_dependencies,
             )
+            .add_step(steps::configure_sccache_gha_token())
             .add_step(steps::setup_sccache(platform))
             .add_step(steps::clippy(platform))
             .add_step(steps::show_sccache_stats(platform)),
@@ -435,6 +437,7 @@ fn run_platform_tests_impl(
                 |job| job.add_step(steps::cargo_install_nextest()),
             )
             .add_step(steps::clear_target_dir_if_large(platform))
+            .add_step(steps::configure_sccache_gha_token())
             .add_step(steps::setup_sccache(platform))
             .when(filter_packages, |job| {
                 job.add_step(
@@ -503,6 +506,7 @@ fn doctests() -> NamedJob {
             .add_step(steps::cache_rust_dependencies_namespace())
             .map(steps::install_linux_dependencies)
             .add_step(steps::setup_cargo_config(Platform::Linux))
+            .add_step(steps::configure_sccache_gha_token())
             .add_step(steps::setup_sccache(Platform::Linux))
             .add_step(run_doctests())
             .add_step(steps::show_sccache_stats(Platform::Linux))

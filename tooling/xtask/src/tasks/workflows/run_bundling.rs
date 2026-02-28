@@ -70,7 +70,7 @@ fn bundle_job(deps: &[&NamedJob]) -> Job {
                     r#"(github.event.action == 'labeled' && github.event.label.name == 'run-bundling') ||
                     (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'run-bundling'))"#,
                 })))
-        .timeout_minutes(60u32)
+        .timeout_minutes(180u32)
 }
 
 pub(crate) fn bundle_mac(
@@ -102,7 +102,10 @@ pub(crate) fn bundle_mac(
             .add_step(steps::setup_node())
             .add_step(steps::setup_sentry())
             .add_step(steps::clear_target_dir_if_large(runners::Platform::Mac))
+            .add_step(steps::configure_sccache_gha_token())
+            .add_step(steps::setup_sccache(platform))
             .add_step(bundle_mac(arch))
+            .add_step(steps::show_sccache_stats(platform))
             .add_step(upload_artifact(&format!(
                 "target/{arch}-apple-darwin/release/{artifact_name}"
             )))
@@ -152,7 +155,10 @@ pub(crate) fn bundle_linux(
             })
             .add_step(steps::setup_sentry())
             .map(steps::install_linux_dependencies)
+            .add_step(steps::configure_sccache_gha_token())
+            .add_step(steps::setup_sccache(platform))
             .add_step(steps::script("./script/bundle-linux"))
+            .add_step(steps::show_sccache_stats(platform))
             .add_step(upload_artifact(&format!("target/release/{artifact_name}")))
             .add_step(upload_artifact(&format!(
                 "target/{remote_server_artifact_name}"
@@ -192,7 +198,10 @@ pub(crate) fn bundle_windows(
                 job.add_step(set_release_channel(platform, release_channel))
             })
             .add_step(steps::setup_sentry())
+            .add_step(steps::configure_sccache_gha_token())
+            .add_step(steps::setup_sccache(platform))
             .add_step(bundle_windows(arch))
+            .add_step(steps::show_sccache_stats(platform))
             .add_step(upload_artifact(&format!("target/{artifact_name}")))
             .add_step(upload_artifact(&format!(
                 "target/{remote_server_artifact_name}"
