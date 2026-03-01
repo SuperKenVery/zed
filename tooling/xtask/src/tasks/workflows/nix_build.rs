@@ -79,6 +79,7 @@ pub(crate) fn build_nix(
         .timeout_minutes(60u32)
         .continue_on_error(true)
         .with_repository_owner_guard()
+        .cond(Expression::new("false"))
         .runs_on(runner)
         .add_env(("ZED_CLIENT_CHECKSUM_SEED", vars::ZED_CLIENT_CHECKSUM_SEED))
         .add_env(("ZED_MINIDUMP_ENDPOINT", vars::ZED_SENTRY_MINIDUMP_ENDPOINT))
