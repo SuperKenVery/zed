@@ -73,10 +73,7 @@ function CheckEnvironmentVariables {
     }
 
     $requiredVars = @(
-        'ZED_WORKSPACE', 'RELEASE_VERSION', 'ZED_RELEASE_CHANNEL',
-        'AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET',
-        'ACCOUNT_NAME', 'CERT_PROFILE_NAME', 'ENDPOINT',
-        'FILE_DIGEST', 'TIMESTAMP_DIGEST', 'TIMESTAMP_SERVER'
+        'ZED_WORKSPACE', 'RELEASE_VERSION', 'ZED_RELEASE_CHANNEL'
     )
 
     foreach ($var in $requiredVars) {
@@ -133,11 +130,6 @@ function BuildRemoteServer {
 
     # Create zipped remote server binary
     $remoteServerSrc = (Resolve-Path ".\$CargoOutDir\remote_server.exe").Path
-
-    if ($env:CI) {
-        Write-Output "Code signing remote_server.exe"
-        & "$innoDir\sign.ps1" $remoteServerSrc
-    }
 
     $remoteServerDst = "$env:ZED_WORKSPACE\target\zed-remote-server-windows-$Architecture.zip"
     Write-Output "Compressing remote_server to $remoteServerDst"
@@ -203,15 +195,6 @@ function MakeAppx {
     $sdk = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64"
     $env:Path += ';' + $sdk
     makeAppx.exe pack /d "$innoDir\make_appx" /p "$innoDir\zed_explorer_command_injector.appx" /nv
-}
-
-function SignZedAndItsFriends {
-    if (-not $env:CI) {
-        return
-    }
-
-    $files = "$innoDir\Zed.exe,$innoDir\cli.exe,$innoDir\auto_update_helper.exe,$innoDir\zed_explorer_command_injector.dll,$innoDir\zed_explorer_command_injector.appx"
-    & "$innoDir\sign.ps1" $files
 }
 
 function DownloadAMDGpuServices {
@@ -346,10 +329,6 @@ function BuildInstaller {
     }
 
     $innoArgs = @($issFilePath) + $defs
-    if($env:CI) {
-        $signTool = "powershell.exe -ExecutionPolicy Bypass -File $innoDir\sign.ps1 `$f"
-        $innoArgs += "/sDefaultsign=`"$signTool`""
-    }
 
     # Execute Inno Setup
     Write-Host "🚀 Running Inno Setup: $innoSetupPath $innoArgs"
@@ -377,7 +356,6 @@ GenerateLicenses
 BuildZedAndItsFriends
 BuildRemoteServer
 MakeAppx
-SignZedAndItsFriends
 ZipZedAndItsFriendsDebug
 DownloadAMDGpuServices
 DownloadConpty
