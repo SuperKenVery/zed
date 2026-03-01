@@ -541,7 +541,7 @@ mod test_support {
     //! - `StubAgentConnection` for mocking agent connections in tests
     //! - `create_test_png_base64` for generating test images
 
-    use std::sync::Arc;
+    use std::{cell::RefCell, sync::Arc};
 
     use action_log::ActionLog;
     use collections::HashMap;
@@ -814,13 +814,13 @@ mod test_support {
 
     #[derive(Clone)]
     struct StubModelSelector {
-        selected_model: Arc<Mutex<AgentModelInfo>>,
+        selected_model: Rc<RefCell<AgentModelInfo>>,
     }
 
     impl StubModelSelector {
         fn new() -> Self {
             Self {
-                selected_model: Arc::new(Mutex::new(AgentModelInfo {
+                selected_model: Rc::new(RefCell::new(AgentModelInfo {
                     id: acp::ModelId::new("visual-test-model"),
                     name: "Visual Test Model".into(),
                     icon: Some(AgentModelIcon::Named(ui::IconName::ZedAssistant)),
@@ -834,17 +834,17 @@ mod test_support {
 
     impl AgentModelSelector for StubModelSelector {
         fn list_models(&self, _cx: &mut App) -> Task<Result<AgentModelList>> {
-            let model = self.selected_model.lock().clone();
+            let model = self.selected_model.borrow().clone();
             Task::ready(Ok(AgentModelList::Flat(vec![model])))
         }
 
         fn select_model(&self, model_id: acp::ModelId, _cx: &mut App) -> Task<Result<()>> {
-            self.selected_model.lock().id = model_id;
+            self.selected_model.borrow_mut().id = model_id;
             Task::ready(Ok(()))
         }
 
         fn selected_model(&self, _cx: &mut App) -> Task<Result<AgentModelInfo>> {
-            Task::ready(Ok(self.selected_model.lock().clone()))
+            Task::ready(Ok(self.selected_model.borrow().clone()))
         }
     }
 
