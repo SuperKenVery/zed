@@ -5,6 +5,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
   RUST_BACKTRACE: '1'
+  SCCACHE_GHA_ENABLED: 'true'
+  RUSTC_WRAPPER: sccache
   ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
@@ -43,14 +45,8 @@ jobs:
       run: |
         mkdir -p ./../.cargo
         cp ./.cargo/ci-config.toml ./../.cargo/config.toml
-    - name: steps::configure_sccache_gha_token
-      uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
-      with:
-        script: |-
-          core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-          core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
     - name: steps::setup_sccache
-      run: ./script/setup-sccache
+      uses: Mozilla-Actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad
     - name: cargo build --package=eval
       run: cargo build --package=eval
     - name: run_agent_evals::agent_evals::run_eval

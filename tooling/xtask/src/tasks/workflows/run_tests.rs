@@ -77,6 +77,8 @@ pub(crate) fn run_tests() -> Workflow {
         .add_env(("CARGO_TERM_COLOR", "always"))
         .add_env(("RUST_BACKTRACE", 1))
         .add_env(("CARGO_INCREMENTAL", 0))
+        .add_env(("SCCACHE_GHA_ENABLED", "true"))
+        .add_env(("RUSTC_WRAPPER", "sccache"))
         .map(|mut workflow| {
             for job in jobs {
                 workflow = workflow.add_job(job.name, job.job)
@@ -339,8 +341,7 @@ fn check_workspace_binaries() -> NamedJob {
             .add_step(steps::setup_cargo_config(Platform::Linux))
             .add_step(steps::cache_rust_dependencies_namespace())
             .map(steps::install_linux_dependencies)
-            .add_step(steps::configure_sccache_gha_token())
-            .add_step(steps::setup_sccache(Platform::Linux))
+            .add_step(steps::setup_sccache())
             .add_step(steps::script("cargo build -p collab"))
             .add_step(steps::script("cargo build --workspace --bins --examples"))
             .add_step(steps::show_sccache_stats(Platform::Linux))
@@ -373,8 +374,7 @@ pub(crate) fn clippy(platform: Platform, require_owner_guard: bool) -> NamedJob 
                 platform == Platform::Linux,
                 steps::install_linux_dependencies,
             )
-            .add_step(steps::configure_sccache_gha_token())
-            .add_step(steps::setup_sccache(platform))
+            .add_step(steps::setup_sccache())
             .add_step(steps::clippy(platform))
             .add_step(steps::show_sccache_stats(platform)),
     }
@@ -437,8 +437,7 @@ fn run_platform_tests_impl(
                 |job| job.add_step(steps::cargo_install_nextest()),
             )
             .add_step(steps::clear_target_dir_if_large(platform))
-            .add_step(steps::configure_sccache_gha_token())
-            .add_step(steps::setup_sccache(platform))
+            .add_step(steps::setup_sccache())
             .when(filter_packages, |job| {
                 job.add_step(
                     steps::cargo_nextest(platform).with_changed_packages_filter("orchestrate"),
@@ -506,8 +505,7 @@ fn doctests() -> NamedJob {
             .add_step(steps::cache_rust_dependencies_namespace())
             .map(steps::install_linux_dependencies)
             .add_step(steps::setup_cargo_config(Platform::Linux))
-            .add_step(steps::configure_sccache_gha_token())
-            .add_step(steps::setup_sccache(Platform::Linux))
+            .add_step(steps::setup_sccache())
             .add_step(run_doctests())
             .add_step(steps::show_sccache_stats(Platform::Linux))
             .add_step(steps::cleanup_cargo_config(Platform::Linux)),

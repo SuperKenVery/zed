@@ -251,40 +251,22 @@ pub fn enable_windows_longpaths() -> Step<Run> {
     "#})
 }
 
-pub fn configure_sccache_gha_token() -> Step<Use> {
-    Step::new("steps::configure_sccache_gha_token")
-        .uses(
-            "actions",
-            "github-script",
-            "f28e40c7f34bde8b3046d885e986cb6290c5673b", // v7
-        )
-        .add_with((
-            "script",
-            indoc::indoc! {r#"
-                core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
-                core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-            "#}
-            .trim(),
-        ))
+pub fn setup_sccache() -> Step<Use> {
+    named::uses(
+        "Mozilla-Actions",
+        "sccache-action",
+        "7d986dd989559c6ecdb630a3fd2557667be217ad", // v0.0.9
+    )
 }
 
-pub fn setup_sccache(platform: Platform) -> Step<Run> {
-    match platform {
-        Platform::Windows => named::pwsh("./script/setup-sccache.ps1"),
-        Platform::Linux | Platform::Mac => named::bash("./script/setup-sccache"),
-    }
+pub fn sccache_envs() -> gh_workflow::Env {
+    gh_workflow::Env::default()
+        .add("SCCACHE_GHA_ENABLED", "true")
+        .add("RUSTC_WRAPPER", "sccache")
 }
 
-pub fn show_sccache_stats(platform: Platform) -> Step<Run> {
-    match platform {
-        // Use $env:RUSTC_WRAPPER (absolute path) because GITHUB_PATH changes
-        // don't take effect until the next step in PowerShell.
-        // Check if RUSTC_WRAPPER is set first (it won't be for fork PRs without secrets).
-        Platform::Windows => {
-            named::pwsh("if ($env:RUSTC_WRAPPER) { & $env:RUSTC_WRAPPER --show-stats }; exit 0")
-        }
-        Platform::Linux | Platform::Mac => named::bash("sccache --show-stats || true"),
-    }
+pub fn show_sccache_stats(_platform: Platform) -> Step<Run> {
+    named::bash("sccache --show-stats || true")
 }
 
 pub fn cache_nix_dependencies_namespace() -> Step<Use> {
