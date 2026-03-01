@@ -384,7 +384,10 @@ pub(crate) fn run_platform_tests(platform: Platform, require_owner_guard: bool) 
     run_platform_tests_impl(platform, true, require_owner_guard)
 }
 
-pub(crate) fn run_platform_tests_no_filter(platform: Platform, require_owner_guard: bool) -> NamedJob {
+pub(crate) fn run_platform_tests_no_filter(
+    platform: Platform,
+    require_owner_guard: bool,
+) -> NamedJob {
     run_platform_tests_impl(platform, false, require_owner_guard)
 }
 
@@ -433,7 +436,9 @@ fn run_platform_tests_impl(
             )
             .add_step(steps::setup_node())
             .when(
-                platform == Platform::Linux || platform == Platform::Mac || platform == Platform::Windows,
+                platform == Platform::Linux
+                    || platform == Platform::Mac
+                    || platform == Platform::Windows,
                 |job| job.add_step(steps::cargo_install_nextest()),
             )
             .add_step(steps::clear_target_dir_if_large(platform))
@@ -607,12 +612,12 @@ pub(crate) fn check_scripts(require_owner_guard: bool) -> NamedJob {
         } else {
             ci_job(&[])
         }
-            .runs_on(runners::LINUX_SMALL)
-            .add_step(steps::checkout_repo())
-            .add_step(run_shellcheck())
-            .add_step(download_actionlint().id("get_actionlint"))
-            .add_step(run_actionlint())
-            .add_step(check_xtask_workflows()),
+        .runs_on(runners::LINUX_SMALL)
+        .add_step(steps::checkout_repo())
+        .add_step(run_shellcheck())
+        .add_step(download_actionlint().id("get_actionlint"))
+        .add_step(run_actionlint())
+        .add_step(check_xtask_workflows()),
     )
 }
 
