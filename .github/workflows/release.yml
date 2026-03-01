@@ -304,7 +304,7 @@ jobs:
     - run_tests_linux
     - clippy_linux
     - check_scripts
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-22.04-arm
     env:
       CARGO_INCREMENTAL: 0
       ZED_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
