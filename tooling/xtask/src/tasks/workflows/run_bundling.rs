@@ -194,15 +194,29 @@ pub(crate) fn bundle_windows(
             .when_some(release_channel, |job, release_channel| {
                 job.add_step(set_release_channel(platform, release_channel))
             })
-            .add_step(steps::setup_sentry())
             .add_step(steps::setup_sccache())
             .add_step(bundle_windows(arch))
             .add_step(steps::show_sccache_stats(platform))
             .add_step(upload_artifact(&format!("target/{artifact_name}")))
             .add_step(upload_artifact(&format!(
                 "target/{remote_server_artifact_name}"
-            ))),
+            )))
+            .add_step(upload_windows_debug_symbols(arch)),
     }
+}
+
+fn upload_windows_debug_symbols(arch: Arch) -> Step<Use> {
+    let name = format!("zed-debug-windows-{arch}");
+    let path = format!("target/{arch}-pc-windows-msvc/release/*.dbg.zip");
+    Step::new(format!("@actions/upload-artifact {name}"))
+        .uses(
+            "actions",
+            "upload-artifact",
+            "330a01c490aca151604b8cf639adc76d48f6c5d4", // v5
+        )
+        .add_with(("name", name))
+        .add_with(("path", path))
+        .add_with(("if-no-files-found", "error"))
 }
 
 fn set_release_channel(platform: Platform, release_channel: ReleaseChannel) -> Step<Run> {
