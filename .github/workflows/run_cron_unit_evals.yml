@@ -5,6 +5,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
   RUST_BACKTRACE: '1'
+  SCCACHE_GHA_ENABLED: 'true'
+  RUSTC_WRAPPER: sccache
   ZED_CLIENT_CHECKSUM_SEED: ${{ secrets.ZED_CLIENT_CHECKSUM_SEED }}
 on:
   workflow_dispatch: {}
@@ -45,12 +47,7 @@ jobs:
     - name: steps::clear_target_dir_if_large
       run: ./script/clear-target-dir-if-larger-than 250
     - name: steps::setup_sccache
-      run: ./script/setup-sccache
-      env:
-        R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-        R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-        R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        SCCACHE_BUCKET: sccache-zed
+      uses: Mozilla-Actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad
     - name: ./script/run-unit-evals
       run: ./script/run-unit-evals
       env:

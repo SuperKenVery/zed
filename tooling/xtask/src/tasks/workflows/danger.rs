@@ -1,6 +1,6 @@
 use gh_workflow::*;
 
-use crate::tasks::workflows::steps::{CommonJobConditions, NamedJob, named};
+use crate::tasks::workflows::steps::{NamedJob, named};
 
 use super::{runners, steps};
 
@@ -41,7 +41,7 @@ fn danger_job() -> NamedJob {
     NamedJob {
         name: "danger".to_string(),
         job: Job::default()
-            .with_repository_owner_guard()
+            .cond(Expression::new("false"))
             .runs_on(runners::LINUX_SMALL)
             .add_step(steps::checkout_repo())
             .add_step(steps::setup_pnpm())

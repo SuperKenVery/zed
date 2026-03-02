@@ -5,6 +5,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
   RUST_BACKTRACE: '1'
+  SCCACHE_GHA_ENABLED: 'true'
+  RUSTC_WRAPPER: sccache
   ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   GOOGLE_AI_API_KEY: ${{ secrets.GOOGLE_AI_API_KEY }}
@@ -44,12 +46,7 @@ jobs:
         mkdir -p ./../.cargo
         cp ./.cargo/ci-config.toml ./../.cargo/config.toml
     - name: steps::setup_sccache
-      run: ./script/setup-sccache
-      env:
-        R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-        R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-        R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        SCCACHE_BUCKET: sccache-zed
+      uses: Mozilla-Actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad
     - name: cargo build --package=eval
       run: cargo build --package=eval
     - name: run_agent_evals::agent_evals::run_eval

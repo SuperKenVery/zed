@@ -78,6 +78,8 @@ pub(crate) fn run_tests() -> Workflow {
         .add_env(("CARGO_TERM_COLOR", "always"))
         .add_env(("RUST_BACKTRACE", 1))
         .add_env(("CARGO_INCREMENTAL", 0))
+        .add_env(("SCCACHE_GHA_ENABLED", "true"))
+        .add_env(("RUSTC_WRAPPER", "sccache"))
         .map(|mut workflow| {
             for job in jobs {
                 workflow = workflow.add_job(job.name, job.job)
@@ -372,7 +374,7 @@ fn check_workspace_binaries() -> NamedJob {
             .add_step(steps::setup_cargo_config(Platform::Linux))
             .add_step(steps::cache_rust_dependencies_namespace())
             .map(steps::install_linux_dependencies)
-            .add_step(steps::setup_sccache(Platform::Linux))
+            .add_step(steps::setup_sccache())
             .add_step(steps::script("cargo build -p collab"))
             .add_step(steps::script("cargo build --workspace --bins --examples"))
             .add_step(steps::show_sccache_stats(Platform::Linux))
@@ -405,7 +407,7 @@ pub(crate) fn clippy(platform: Platform, require_owner_guard: bool) -> NamedJob 
                 platform == Platform::Linux,
                 steps::install_linux_dependencies,
             )
-            .add_step(steps::setup_sccache(platform))
+            .add_step(steps::setup_sccache())
             .add_step(steps::clippy(platform))
             .add_step(steps::show_sccache_stats(platform)),
     }
@@ -415,7 +417,10 @@ pub(crate) fn run_platform_tests(platform: Platform, require_owner_guard: bool) 
     run_platform_tests_impl(platform, true, require_owner_guard)
 }
 
-pub(crate) fn run_platform_tests_no_filter(platform: Platform, require_owner_guard: bool) -> NamedJob {
+pub(crate) fn run_platform_tests_no_filter(
+    platform: Platform,
+    require_owner_guard: bool,
+) -> NamedJob {
     run_platform_tests_impl(platform, false, require_owner_guard)
 }
 
@@ -464,11 +469,13 @@ fn run_platform_tests_impl(
             )
             .add_step(steps::setup_node())
             .when(
-                platform == Platform::Linux || platform == Platform::Mac || platform == Platform::Windows,
+                platform == Platform::Linux
+                    || platform == Platform::Mac
+                    || platform == Platform::Windows,
                 |job| job.add_step(steps::cargo_install_nextest()),
             )
             .add_step(steps::clear_target_dir_if_large(platform))
-            .add_step(steps::setup_sccache(platform))
+            .add_step(steps::setup_sccache())
             .when(filter_packages, |job| {
                 job.add_step(
                     steps::cargo_nextest(platform).with_changed_packages_filter("orchestrate"),
@@ -536,7 +543,7 @@ fn doctests() -> NamedJob {
             .add_step(steps::cache_rust_dependencies_namespace())
             .map(steps::install_linux_dependencies)
             .add_step(steps::setup_cargo_config(Platform::Linux))
-            .add_step(steps::setup_sccache(Platform::Linux))
+            .add_step(steps::setup_sccache())
             .add_step(run_doctests())
             .add_step(steps::show_sccache_stats(Platform::Linux))
             .add_step(steps::cleanup_cargo_config(Platform::Linux)),
@@ -636,12 +643,12 @@ pub(crate) fn check_scripts(require_owner_guard: bool) -> NamedJob {
         } else {
             ci_job(&[])
         }
-            .runs_on(runners::LINUX_SMALL)
-            .add_step(steps::checkout_repo())
-            .add_step(run_shellcheck())
-            .add_step(download_actionlint().id("get_actionlint"))
-            .add_step(run_actionlint())
-            .add_step(check_xtask_workflows()),
+        .runs_on(runners::LINUX_SMALL)
+        .add_step(steps::checkout_repo())
+        .add_step(run_shellcheck())
+        .add_step(download_actionlint().id("get_actionlint"))
+        .add_step(run_actionlint())
+        .add_step(check_xtask_workflows()),
     )
 }
 

@@ -6,7 +6,7 @@ pub const LINUX_MEDIUM: Runner = Runner("ubuntu-latest");
 
 // Using Ubuntu 20.04 for minimal glibc version
 pub const LINUX_X86_BUNDLER: Runner = Runner("ubuntu-20.04");
-pub const LINUX_ARM_BUNDLER: Runner = Runner("ubuntu-22.04");
+pub const LINUX_ARM_BUNDLER: Runner = Runner("ubuntu-22.04-arm");
 
 // Larger Ubuntu runner with glibc 2.39 for extension bundling
 pub const LINUX_LARGE_RAM: Runner = Runner("ubuntu-latest");

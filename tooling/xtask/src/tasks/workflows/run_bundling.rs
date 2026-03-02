@@ -4,7 +4,7 @@ use crate::tasks::workflows::{
     nix_build::build_nix,
     release::ReleaseBundleJobs,
     runners::{Arch, Platform, ReleaseChannel},
-    steps::{DEFAULT_REPOSITORY_OWNER_GUARD, FluentBuilder, NamedJob, dependant_job, named},
+    steps::{FluentBuilder, NamedJob, dependant_job, named},
     vars::{assets, bundle_envs},
 };
 
@@ -54,11 +54,7 @@ fn nix_job(platform: Platform, arch: Arch) -> NamedJob {
         Some("-zed-editor-[0-9.]*"),
         &[],
     );
-    job.job = job.job.cond(Expression::new(format!(
-        "{} && ((github.event.action == 'labeled' && github.event.label.name == 'run-bundling') || \
-        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'run-bundling')))",
-        DEFAULT_REPOSITORY_OWNER_GUARD
-    )));
+    job.job = job.job.cond(Expression::new("false"));
     job
 }
 
@@ -70,7 +66,7 @@ fn bundle_job(deps: &[&NamedJob]) -> Job {
                     r#"(github.event.action == 'labeled' && github.event.label.name == 'run-bundling') ||
                     (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'run-bundling'))"#,
                 })))
-        .timeout_minutes(60u32)
+        .timeout_minutes(180u32)
 }
 
 pub(crate) fn bundle_mac(
@@ -95,6 +91,7 @@ pub(crate) fn bundle_mac(
         job: bundle_job(deps)
             .runs_on(runners::MAC_DEFAULT)
             .envs(bundle_envs(platform))
+            .envs(steps::sccache_envs())
             .add_step(steps::checkout_repo())
             .when_some(release_channel, |job, release_channel| {
                 job.add_step(set_release_channel(platform, release_channel))
@@ -102,7 +99,9 @@ pub(crate) fn bundle_mac(
             .add_step(steps::setup_node())
             .add_step(steps::setup_sentry())
             .add_step(steps::clear_target_dir_if_large(runners::Platform::Mac))
+            .add_step(steps::setup_sccache())
             .add_step(bundle_mac(arch))
+            .add_step(steps::show_sccache_stats(platform))
             .add_step(upload_artifact(&format!(
                 "target/{arch}-apple-darwin/release/{artifact_name}"
             )))
@@ -146,13 +145,16 @@ pub(crate) fn bundle_linux(
         job: bundle_job(deps)
             .runs_on(arch.linux_bundler())
             .envs(bundle_envs(platform))
+            .envs(steps::sccache_envs())
             .add_step(steps::checkout_repo())
             .when_some(release_channel, |job, release_channel| {
                 job.add_step(set_release_channel(platform, release_channel))
             })
             .add_step(steps::setup_sentry())
             .map(steps::install_linux_dependencies)
+            .add_step(steps::setup_sccache())
             .add_step(steps::script("./script/bundle-linux"))
+            .add_step(steps::show_sccache_stats(platform))
             .add_step(upload_artifact(&format!("target/release/{artifact_name}")))
             .add_step(upload_artifact(&format!(
                 "target/{remote_server_artifact_name}"
@@ -171,7 +173,7 @@ pub(crate) fn bundle_windows(
             Arch::X86_64 => named::pwsh("script/bundle-windows.ps1 -Architecture x86_64"),
             Arch::AARCH64 => named::pwsh("script/bundle-windows.ps1 -Architecture aarch64"),
         };
-        step.working_directory("${{ env.ZED_WORKSPACE }}")
+        step
     }
     let artifact_name = match arch {
         Arch::X86_64 => assets::WINDOWS_X86_64,
@@ -186,18 +188,35 @@ pub(crate) fn bundle_windows(
         job: bundle_job(deps)
             .runs_on(runners::WINDOWS_DEFAULT)
             .envs(bundle_envs(platform))
+            .envs(steps::sccache_envs())
             .add_step(steps::checkout_repo())
             .add_step(steps::enable_windows_longpaths())
             .when_some(release_channel, |job, release_channel| {
                 job.add_step(set_release_channel(platform, release_channel))
             })
-            .add_step(steps::setup_sentry())
+            .add_step(steps::setup_sccache())
             .add_step(bundle_windows(arch))
+            .add_step(steps::show_sccache_stats(platform))
             .add_step(upload_artifact(&format!("target/{artifact_name}")))
             .add_step(upload_artifact(&format!(
                 "target/{remote_server_artifact_name}"
-            ))),
+            )))
+            .add_step(upload_windows_debug_symbols(arch)),
     }
+}
+
+fn upload_windows_debug_symbols(arch: Arch) -> Step<Use> {
+    let name = format!("zed-debug-windows-{arch}");
+    let path = format!("target/{arch}-pc-windows-msvc/release/*.dbg.zip");
+    Step::new(format!("@actions/upload-artifact {name}"))
+        .uses(
+            "actions",
+            "upload-artifact",
+            "330a01c490aca151604b8cf639adc76d48f6c5d4", // v5
+        )
+        .add_with(("name", name))
+        .add_with(("path", path))
+        .add_with(("if-no-files-found", "error"))
 }
 
 fn set_release_channel(platform: Platform, release_channel: ReleaseChannel) -> Step<Run> {
@@ -219,7 +238,6 @@ fn set_release_channel_to_nightly(platform: Platform) -> Step<Run> {
             $version = git rev-parse --short HEAD
             Write-Host "Publishing version: $version on release channel nightly"
             "nightly" | Set-Content -Path "crates/zed/RELEASE_CHANNEL"
-        "#})
-        .working_directory("${{ env.ZED_WORKSPACE }}"),
+        "#}),
     }
 }

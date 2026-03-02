@@ -3,8 +3,6 @@ use serde_json::Value;
 
 use crate::tasks::workflows::{runners::Platform, vars, vars::StepOutput};
 
-const SCCACHE_R2_BUCKET: &str = "sccache-zed";
-
 const BASH_SHELL: &str = "bash -euxo pipefail {0}";
 // https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepsshell
 pub const PWSH_SHELL: &str = "pwsh";
@@ -253,27 +251,22 @@ pub fn enable_windows_longpaths() -> Step<Run> {
     "#})
 }
 
-pub fn setup_sccache(platform: Platform) -> Step<Run> {
-    let step = match platform {
-        Platform::Windows => named::pwsh("./script/setup-sccache.ps1"),
-        Platform::Linux | Platform::Mac => named::bash("./script/setup-sccache"),
-    };
-    step.add_env(("R2_ACCOUNT_ID", vars::R2_ACCOUNT_ID))
-        .add_env(("R2_ACCESS_KEY_ID", vars::R2_ACCESS_KEY_ID))
-        .add_env(("R2_SECRET_ACCESS_KEY", vars::R2_SECRET_ACCESS_KEY))
-        .add_env(("SCCACHE_BUCKET", SCCACHE_R2_BUCKET))
+pub fn setup_sccache() -> Step<Use> {
+    named::uses(
+        "Mozilla-Actions",
+        "sccache-action",
+        "7d986dd989559c6ecdb630a3fd2557667be217ad", // v0.0.9
+    )
 }
 
-pub fn show_sccache_stats(platform: Platform) -> Step<Run> {
-    match platform {
-        // Use $env:RUSTC_WRAPPER (absolute path) because GITHUB_PATH changes
-        // don't take effect until the next step in PowerShell.
-        // Check if RUSTC_WRAPPER is set first (it won't be for fork PRs without secrets).
-        Platform::Windows => {
-            named::pwsh("if ($env:RUSTC_WRAPPER) { & $env:RUSTC_WRAPPER --show-stats }; exit 0")
-        }
-        Platform::Linux | Platform::Mac => named::bash("sccache --show-stats || true"),
-    }
+pub fn sccache_envs() -> gh_workflow::Env {
+    gh_workflow::Env::default()
+        .add("SCCACHE_GHA_ENABLED", "true")
+        .add("RUSTC_WRAPPER", "sccache")
+}
+
+pub fn show_sccache_stats(_platform: Platform) -> Step<Run> {
+    named::bash("sccache --show-stats || true")
 }
 
 pub fn cache_nix_dependencies_namespace() -> Step<Use> {
